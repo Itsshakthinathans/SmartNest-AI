@@ -1,37 +1,86 @@
-# 📐 SmartNest AI — v1.0 Stable
+# <p align="center">📐 SmartNest AI — v1.0 Stable</p>
 
-> **Headless Genetic Nesting Engine, Material Remnant Inventory System, Cost Estimation, and Gemini-Powered AI Manufacturing Advisor.**
+<p align="center">
+  <strong>An Industrial-Grade Headless Nesting Optimization Engine, Sheet Remnant Stock Recovery System, and Gemini-Powered Fabrication Advisor.</strong>
+</p>
 
-SmartNest AI is a modern, high-performance CAD/CAM layout optimization and material planning platform designed to maximize raw sheet utilization, reduce manufacturing scrap, and provide intelligent fabrication recommendations.
-
----
-
-## ⚡ Core Features
-
-*   **📐 DXF Geometry Upload & Parsing**
-    *   Client-side CAD drawing (.dxf) parsing and conversion to vector SVG contours.
-    *   Dynamic bounding-box and geometric centroid calculation.
-*   **🧬 Genetic Nesting Optimization Engine**
-    *   Headless optimization utilizing native C++ No-Fit-Polygon (NFP) and Minkowski Sum calculations.
-    *   Generative sequence mutation (swaps, rotation angles, packing order) to maximize sheet yields.
-    *   Configurable optimization tiers: Greedy, Fast (10 gens), Balanced (50 gens), and Maximum (200 gens).
-*   **🔢 Quantity & Batch Management**
-    *   Replicates parts geometrically before processing to optimize individual copies independently.
-*   **🪵 Material & Cost Estimation**
-    *   Master library rate parameters for Mild Steel, Stainless Steel 304, Aluminium, Copper, and Brass.
-    *   Weight estimation using sheet dimensions, thickness, and volumetric density.
-    *   Automatic costing metrics: Raw Material Cost, Scrap/Waste Value, and Net Job Cost.
-*   **♻️ Remnant Tracking & Reuse (Stock Recovery)**
-    *   Automatically calculates leftover rectangular offcuts on run completions and logs them into a global stock dashboard.
-    *   Recommends compatible remnants for upcoming projects based on material type, thickness, and footprint.
-    *   "Use Remnant" workflow: overrides sheet sizes, runs nesting strictly on the remnant offcut shape, and flags the source remnant as consumed.
-*   **🤖 AI Manufacturing Advisor (Gemini integration)**
-    *   Integration with Google Gemini (`gemini-2.5-flash`) via the `@google/genai` SDK.
-    *   Generates custom recommendations based on actual job metrics: packing density, scrap recovery, layout parameters, and estimated financial savings.
+<p align="center">
+  <img src="https://img.shields.io/badge/React-20232A?style=for-the-badge&logo=react&logoColor=61DAFB" alt="React" />
+  <img src="https://img.shields.io/badge/Node.js-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node" />
+  <img src="https://img.shields.io/badge/PostgreSQL-316192?style=for-the-badge&logo=postgresql&logoColor=white" alt="PostgreSQL" />
+  <img src="https://img.shields.io/badge/Gemini%20AI-8E75C2?style=for-the-badge&logo=google&logoColor=white" alt="Gemini" />
+  <img src="https://img.shields.io/badge/Vite-646CFF?style=for-the-badge&logo=vite&logoColor=white" alt="Vite" />
+  <img src="https://img.shields.io/badge/Material--UI-007FFF?style=for-the-badge&logo=mui&logoColor=white" alt="MUI" />
+</p>
 
 ---
 
-## 🏗️ Architecture & Technology Stack
+## 📖 Introduction
+
+SmartNest AI is a modern CAD/CAM nesting dashboard designed to optimize sheet layout yields, minimize scrap waste, calculate real-time fabrication costs, and dynamically recommend remnant reuse. 
+
+With interactive CAD pan-and-zoom previews, geometric centroid calculations, and an embedded Gemini advisor, it bridges the gap between software optimization and physical shop-floor efficiency.
+
+> [!IMPORTANT]
+> **Production Status**: **v1.0-Stable** is fully verified. Unit tests, database migrations, and E2E simulation checks have completed successfully.
+
+---
+
+## ✨ System Features
+
+### 📐 1. Headless Genetic Nesting Core
+* **Native C++ Engine Integration**: Uses `@deepnest/calculate-nfp` native bindings to run Minkowski Sums directly in Node.js, bypassing heavy Electron GUI requirements.
+* **Rotational & Order Mutations**: Packs parts tightly by dynamically mutating sheet order, part sequence, and rotation angles.
+* **Optimization Levels**:
+  | Tier | Generations | Speed | Intent |
+  | :--- | :---: | :---: | :--- |
+  | **Greedy** | 0 | Instant | Quick, sequential bounding pass. |
+  | **Genetic Fast** | 10 | ~1.5m | Tight packing for basic geometry batches. |
+  | **Genetic Balanced** | 50 | ~5m | Maximized packing for complex production runs. |
+  | **Genetic Maximum** | 200 | ~20m | Ultimate density pass for heavy cutting templates. |
+
+### ♻️ 2. Remnant Stock Tracking & Closed-Loop Reuse
+* **Auto-Offcut Seed**: Measures sheet coordinates post-run (`Width - maxX`) to record unused rectangular templates.
+* **Dynamic Valuation**: Automatically evaluates remnant offcut recovery value using material-specific scrap prices.
+* **Remnant Recommendation**: Matches compatible remnants for upcoming projects based on material type, thickness, and nesting area.
+* **Loop Closure**: "Use Remnant" toggles dimensions override, locks standard inputs, runs the nesting job strictly on the remnant, and flags it as `used = true`.
+
+### 💰 3. Material Management & Cost Estimation V1
+* **Material Master Table**:
+  | Material | Density (kg/m³) | Price (₹/kg) | Scrap Rate (₹/kg) |
+  | :--- | :---: | :---: | :---: |
+  | **Mild Steel** | 7,850 | ₹ 75.00 | ₹ 20.00 |
+  | **Stainless Steel 304** | 8,000 | ₹ 200.00 | ₹ 60.00 |
+  | **Aluminium** | 2,700 | ₹ 350.00 | ₹ 90.00 |
+  | **Copper** | 8,960 | ₹ 1,500.00 | ₹ 400.00 |
+  | **Brass** | 8,500 | ₹ 650.00 | ₹ 180.00 |
+* **Precise Cost Breakdown**: Outputs total plate volume/weight, raw sheet cost, waste scrap value, and net job cost.
+
+### 🤖 4. Gemini AI Manufacturing Advisor
+* Powered by Google Gemini (`gemini-2.5-flash`) via the new `@google/genai` SDK.
+* Automatically evaluates nesting runs to output structural JSON summaries, recommendations, and estimated savings.
+
+---
+
+## 📂 Project Architecture
+
+```
+smartnest-ai/
+├── backend/                  # Node.js + Express API Server
+│   ├── src/
+│   │   ├── config/           # Database configurations & migrations
+│   │   ├── controllers/      # Route handler controllers (Nesting, Remnants, Projects, AI)
+│   │   ├── routes/           # REST Endpoint routes
+│   │   └── services/         # Core business logic (Nesting engine, Costing, AI Advisor)
+│   ├── verify_remnant_reuse.js
+│   └── verify_ai_advisor.js
+├── frontend/                 # React SPA (Vite + MUI)
+│   ├── src/
+│   │   ├── layouts/          # Dashboard Navigation Shells
+│   │   ├── pages/            # View pages (Projects, Details, Inventory, Results)
+│   │   └── services/         # Axios API Client Wrapper
+└── README.md
+```
 
 ```mermaid
 graph TD
@@ -42,25 +91,18 @@ graph TD
     B -->|Auto-Remnants| F[Remnants Inventory]
 ```
 
-*   **Frontend**: React (Vite), Material UI (MUI), Axios, React Router.
-*   **Backend**: Node.js, Express, PostgreSQL (`pg` pool).
-*   **AI Service**: Gemini Developer API (`@google/genai` SDK).
-*   **Nesting Core**: Headless JavaScript wrapper for native Minkowski C++ bindings (`@deepnest/calculate-nfp`).
-
 ---
 
-## ⚙️ Quick Start & Setup
-
-### Prerequisites
-*   Node.js (v18+)
-*   PostgreSQL
-*   Google Gemini API Key
+## 🛠️ Step-by-Step Installation
 
 ### 1. Database Setup
-Create a PostgreSQL database named `smartnest_ai` and run the schema queries inside [schema.sql](file:///e:/smartnest-ai/backend/src/config/schema.sql) to provision tables and indexes.
+Create a PostgreSQL database named `smartnest_ai` and run the schema queries inside [schema.sql](file:///e:/smartnest-ai/backend/src/config/schema.sql):
+```sql
+CREATE DATABASE smartnest_ai;
+```
 
-### 2. Backend Config
-Navigate to the `backend` directory, install packages, create a `.env` file, and populate:
+### 2. Configure Environment Secrets
+Create a `.env` file inside the `backend` folder:
 ```ini
 PORT=5000
 DB_HOST=localhost
@@ -71,40 +113,40 @@ DB_PASSWORD=your_postgres_password
 GEMINI_API_KEY=your_gemini_api_key
 ```
 
-Run database migrations and start the dev server:
+### 3. Spin Up Services
 ```bash
+# Set up backend server and database
 cd backend
 npm install
 node src/config/migrate.js
 npm run dev
-```
 
-### 3. Frontend Config
-Navigate to the `frontend` directory, install packages, and start the development server:
-```bash
+# In a separate terminal shell, set up frontend client
 cd ../frontend
 npm install
 npm run dev
 ```
-Open [http://localhost:5173/](http://localhost:5173/) in your web browser.
+
+> [!TIP]
+> Make sure local port `5000` (Backend API) and `5173` (or alternative Vite fallback) are open and available.
 
 ---
 
-## 🧪 Verification & Rollback Commands
+## 🛡️ Git Checkpoint & Rollback Rules
 
-### Production Build Verification
-To compile the React SPA for production deployment:
+### Create Production Build
+Before tagging any releases, ensure the client bundle builds without compilation errors:
 ```bash
 cd frontend
 npm run build
 ```
 
-### Restore Stable Release Checkpoint
-If you need to discard new experiments and rollback the codebase to the verified v1.0 stable release:
+### Rolling Back to Stable Checkout
+If a new experimental commit breaks layout calculations, safely revert files to this stable v1.0 state:
 ```bash
-# Checkout the tag in detached HEAD mode
+# Checkout v1.0 tag in read-only mode
 git checkout smartnest-v1-stable
 
-# Or hard reset your current branch to the v1.0 release tag
+# Discard commits on your current branch and force-revert to stable state
 git reset --hard smartnest-v1-stable
 ```
