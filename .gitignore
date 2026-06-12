@@ -1,0 +1,50 @@
+# Dependency folders
+node_modules/
+**/node_modules/
+
+# Native build directories
+build/
+**/build/
+bin/
+obj/
+*.node
+
+# Environment config and secrets
+.env
+.env.*
+*.env
+.env.local
+.env.production
+.env.development
+.env.staging
+
+# OS and IDE files
+.DS_Store
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Uploads cache and database storage
+backend/src/uploads/projects/
+backend/src/uploads/temp/
+
+# Logs and validation outputs
+*.log
+**/logs/
+*.log*
+backend/*.log
+frontend/*.log
+backend/verify_remnant_tracking.log
+backend/verify_ai_advisor.log
+backend/compare_nesting.log
+
+# Nesting engine generated outputs
+nested_output*.svg
+nested_output*.json
+ai-service/deepnest-next/nested_output*.svg
+ai-service/deepnest-next/nested_output*.json
+deepnest-engine/test.json
