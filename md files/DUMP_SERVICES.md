@@ -1,3 +1,160 @@
+====================================================
+FILE: backend/src/services/costingService.js
+====================================================
+
+const MATERIAL_MASTER = {
+  'Mild Steel': { density: 7850, rate: 75 },
+  'Stainless Steel': { density: 8000, rate: 200 },
+  'Stainless Steel 304': { density: 8000, rate: 200 },
+  'Aluminium': { density: 2700, rate: 350 },
+  'Copper': { density: 8960, rate: 1500 },
+  'Brass': { density: 8500, rate: 650 }
+};
+
+function getMaterialConfig(materialType) {
+  const name = String(materialType || 'Mild Steel').trim();
+  const matchedKey = Object.keys(MATERIAL_MASTER).find(
+    k => k.toLowerCase() === name.toLowerCase()
+  );
+  if (matchedKey) {
+    return MATERIAL_MASTER[matchedKey];
+  }
+  return MATERIAL_MASTER['Mild Steel'];
+}
+
+function calculateCost(materialType, thicknessMm, sheetWidthMm, sheetHeightMm, utilizationPercent) {
+  const { density, rate } = getMaterialConfig(materialType);
+  const thickness = parseFloat(thicknessMm) || 0.0;
+  const sheetWidth = parseFloat(sheetWidthMm) || 0.0;
+  const sheetHeight = parseFloat(sheetHeightMm) || 0.0;
+  const utilization = parseFloat(utilizationPercent) || 0.0;
+
+  // Area in mm²
+  const sheetArea = sheetWidth * sheetHeight;
+  const usedArea = sheetArea * (utilization / 100);
+  const wasteArea = sheetArea - usedArea;
+
+  // Volume in mm³ converted to m³
+  const usedVolumeM3 = (usedArea * thickness) * 1e-9;
+  const wasteVolumeM3 = (wasteArea * thickness) * 1e-9;
+
+  // Weights in kg
+  const estimatedWeight = usedVolumeM3 * density;
+  const wasteWeight = wasteVolumeM3 * density;
+
+  // Cost and Scrap value in ₹
+  const materialCost = estimatedWeight * rate;
+  const scrapValue = wasteWeight * rate;
+  const totalEstimatedCost = materialCost;
+
+  return {
+    estimatedWeight: parseFloat(estimatedWeight.toFixed(4)),
+    materialCost: parseFloat(materialCost.toFixed(2)),
+    scrapValue: parseFloat(scrapValue.toFixed(2)),
+    totalEstimatedCost: parseFloat(totalEstimatedCost.toFixed(2)),
+    sheetArea,
+    usedArea,
+    wasteArea
+  };
+}
+
+module.exports = {
+  calculateCost,
+  MATERIAL_MASTER
+};
+
+
+====================================================
+FILE: backend/src/services/aiService.js
+====================================================
+
+const { GoogleGenAI } = require('@google/genai');
+
+const getManufacturingRecommendations = async (jobData, remnantData, inputRemnantData) => {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY is not defined in environment variables.');
+  }
+
+  const ai = new GoogleGenAI({ apiKey });
+
+  // Prepare input description for Gemini
+  let promptText = `
+You are an expert "Industrial Nesting and Manufacturing Optimization Advisor". Analyze the following nesting job and provide optimization recommendations.
+
+Nesting Job Details:
+- Project ID: ${jobData.project_id}
+- Material Type: ${jobData.material_type}
+- Thickness: ${jobData.material_thickness} mm
+- Sheet Size: ${jobData.sheet_width} x ${jobData.sheet_height} mm
+- Part Count: ${jobData.total_parts} requested, ${jobData.placed_parts} placed
+- Sheet Utilization: ${jobData.utilization}%
+- Material Cost: ₹${jobData.material_cost}
+- Scrap/Waste Recovery Value: ₹${jobData.scrap_value}
+- Total Net Cost: ₹${jobData.total_estimated_cost}
+`;
+
+  if (inputRemnantData) {
+    promptText += `- Nested on Leftover Remnant Stock (RM-${String(inputRemnantData.id).padStart(4, '0')}) of dimensions ${inputRemnantData.sheet_width} x ${inputRemnantData.sheet_height} mm.\n`;
+  } else {
+    promptText += `- Nested on standard sheet stock.\n`;
+  }
+
+  if (remnantData) {
+    promptText += `- Generated new leftover remnant: RM-${String(remnantData.id).padStart(4, '0')} of dimensions ${remnantData.remaining_width} x ${remnantData.remaining_height} mm with remaining area ${remnantData.remaining_area} mm² (estimated value ₹${remnantData.estimated_value}).\n`;
+  }
+
+  promptText += `
+Please deliver clear recommendations covering:
+1. Utilization improvement (e.g., nesting optimization level, layout sequence, part rotation).
+2. Sheet size optimization (e.g., standard sheets vs custom dimensions, grouping parts).
+3. Remnant usage recommendations (how to reuse the generated remnant, or whether using a remnant reduced cost).
+4. Material waste and cost reduction insights.
+
+You MUST return the output as a valid JSON object matching this schema exactly:
+{
+  "summary": "Concise summary of layout performance, cost metrics, and overall material yield.",
+  "recommendations": [
+    "Specific actionable recommendation 1...",
+    "Specific actionable recommendation 2...",
+    "Specific actionable recommendation 3..."
+  ],
+  "estimatedSavings": "A projected saving statement in ₹ or %, e.g., '₹ 1,200 (approx. 8% savings by increasing utilization by 5% or reusing the RM-0001 remnant)'"
+}
+`;
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: promptText,
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: 'OBJECT',
+        properties: {
+          summary: { type: 'STRING' },
+          recommendations: {
+            type: 'ARRAY',
+            items: { type: 'STRING' }
+          },
+          estimatedSavings: { type: 'STRING' }
+        },
+        required: ['summary', 'recommendations', 'estimatedSavings']
+      }
+    }
+  });
+
+  return JSON.parse(response.text);
+};
+
+module.exports = {
+  getManufacturingRecommendations
+};
+
+
+====================================================
+FILE: backend/src/services/nestingService.js
+====================================================
+
 const fs = require('fs');
 const path = require('path');
 const { DOMParser } = require('@xmldom/xmldom');
@@ -1437,3 +1594,5 @@ module.exports = {
   calculateFileArea,
   updateLayoutFiles
 };
+
+

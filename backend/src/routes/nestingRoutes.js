@@ -11,4 +11,10 @@ router.get('/status/:jobId', nestingController.getJobStatus);
 // 3. Get Nesting Result
 router.get('/result/:jobId', nestingController.getNestingResult);
 
+// 4. Get Layout Placements
+router.get('/layout/:jobId', nestingController.getLayoutPlacements);
+
+// 5. Update Layout Placements
+router.put('/layout/:jobId', nestingController.updateLayoutPlacements);
+
 module.exports = router;

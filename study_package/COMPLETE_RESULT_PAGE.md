@@ -1,3 +1,8 @@
+# Component View Source: Result.jsx
+
+This file contains the complete React component source code of the Nesting Result view.
+
+```javascript
 import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
@@ -1183,3 +1188,5 @@ export default function Result() {
     </Box>
   );
 }
+
+```

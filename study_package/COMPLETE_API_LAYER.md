@@ -1,3 +1,9 @@
+# Client API Gateway Client Layer
+
+This document contains the complete Axios API routing interface wrapper.
+
+## Source Code
+```javascript
 import axios from 'axios';
 
 const API_BASE_URL = 'http://localhost:5000/api';
@@ -118,3 +124,25 @@ export const api = {
 };
 
 export default api;
+
+```
+
+## Endpoint Explanations
+
+1. **`getProjects`**:
+   * **Endpoint**: `GET /api/projects`
+   * **Response**: List of projects.
+2. **`createProject`**:
+   * **Endpoint**: `POST /api/projects`
+   * **Payload**: `{ user_id: 1, project_name, description, materialType, materialThickness }`
+3. **`uploadFile`**:
+   * **Endpoint**: `POST /api/files/upload`
+   * **Payload**: `multipart/form-data` (containing `project_id`, `file`, and optional `quantity`).
+4. **`startNestingJob`**:
+   * **Endpoint**: `POST /api/nesting/start/:projectId`
+   * **Payload**: `{ optimizationLevel, sheetWidth, sheetHeight, remnantId }`
+5. **`getLayoutPlacements`**:
+   * **Endpoint**: `GET /api/nesting/layout/:jobId`
+6. **`updateLayoutPlacements`**:
+   * **Endpoint**: `PUT /api/nesting/layout/:jobId`
+   * **Payload**: `{ parts: [ { id, filename, x, y, rotation } ] }`

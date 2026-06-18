@@ -1,3 +1,8 @@
+# Service Source: nestingService.js
+
+This file contains the complete nesting optimization and math utility service.
+
+```javascript
 const fs = require('fs');
 const path = require('path');
 const { DOMParser } = require('@xmldom/xmldom');
@@ -1437,3 +1442,5 @@ module.exports = {
   calculateFileArea,
   updateLayoutFiles
 };
+
+```

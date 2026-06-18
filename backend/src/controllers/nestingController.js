@@ -269,8 +269,106 @@ const getNestingResult = async (req, res) => {
   }
 };
 
+// 4. Get Layout Placements
+const getLayoutPlacements = async (req, res) => {
+  const { jobId } = req.params;
+
+  try {
+    const query = 'SELECT output_file FROM nest_jobs WHERE id = $1';
+    const result = await pool.query(query, [jobId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: `Nesting Job with ID ${jobId} not found`
+      });
+    }
+
+    const job = result.rows[0];
+    if (!job.output_file) {
+      return res.status(200).json({ parts: [] });
+    }
+
+    const fs = require('fs');
+    const path = require('path');
+    const jsonPath = path.join(__dirname, '../', job.output_file.replace('.svg', '.json'));
+    if (!fs.existsSync(jsonPath)) {
+      return res.status(200).json({ parts: [] });
+    }
+
+    const rawData = fs.readFileSync(jsonPath, 'utf8');
+    const layout = JSON.parse(rawData);
+    const placements = (layout.placements && layout.placements[0] && layout.placements[0].sheetplacements) || [];
+
+    const parts = placements.map(p => ({
+      id: p.id,
+      filename: p.filename || '',
+      x: p.x,
+      y: p.y,
+      rotation: p.rotation
+    }));
+
+    return res.status(200).json({ parts });
+
+  } catch (err) {
+    console.error('Error in getLayoutPlacements:', err.message);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal Server Error',
+      error: err.message
+    });
+  }
+};
+
+// 5. Update Layout Placements
+const updateLayoutPlacements = async (req, res) => {
+  const { jobId } = req.params;
+  const { parts } = req.body;
+
+  try {
+    const jobQuery = 'SELECT project_id, output_file FROM nest_jobs WHERE id = $1';
+    const jobResult = await pool.query(jobQuery, [jobId]);
+
+    if (jobResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: `Nesting Job with ID ${jobId} not found`
+      });
+    }
+
+    const job = jobResult.rows[0];
+    if (!job.output_file) {
+      return res.status(400).json({
+        success: false,
+        message: 'No layout files exist for this job.'
+      });
+    }
+
+    // Query project files to rebuild geometry structures
+    const filesQuery = 'SELECT * FROM uploaded_files WHERE project_id = $1';
+    const filesResult = await pool.query(filesQuery, [job.project_id]);
+
+    await nestingService.updateLayoutFiles(jobId, filesResult.rows, parts);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Layout coordinates adjusted successfully.'
+    });
+
+  } catch (err) {
+    console.error('Error in updateLayoutPlacements:', err.message);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal Server Error',
+      error: err.message
+    });
+  }
+};
+
 module.exports = {
   startNestingJob,
   getJobStatus,
-  getNestingResult
+  getNestingResult,
+  getLayoutPlacements,
+  updateLayoutPlacements
 };
