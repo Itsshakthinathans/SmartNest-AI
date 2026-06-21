@@ -60,6 +60,18 @@ With interactive CAD pan-and-zoom previews, geometric centroid calculations, and
 * Powered by Google Gemini (`gemini-2.5-flash`) via the new `@google/genai` SDK.
 * Automatically evaluates nesting runs to output structural JSON summaries, recommendations, and estimated savings.
 
+### 📦 5. Professional Export Center V1
+* **Single-Click Industrial Outputs**:
+  * **📄 PDF Manufacturing Report**: Includes raw material details, sheet utilization metrics, weight & scrap pricing breakdowns, embedded SVG layout preview scaled to margins, and Gemini AI advisor fabrication summaries.
+  * **🖼 SVG Drawing Layout**: Professional Vector SVG layout containing scaled boundaries, part numbers, and high-fidelity geometries ready for downstream CAD importing.
+  * **📦 JSON Coordinates Map**: Complete placement database tracking every part's translation coordinates (`x`, `y`), rotation angles, source file IDs, and optimization metrics.
+
+### 🔄 6. Auto Nest Restoration & Re-Nest Workflow
+* **Safe Layout Source Switching**:
+  * **Reset to Auto Nest**: Instantly discards manual edit changes and restores the immutable auto-generated placements reference without triggering nesting recalculations.
+  * **Re-Generate Nest**: Re-computes a fresh layout from scratch using the original job optimization parameters and updates reference paths.
+  * **Visual State Tracking**: Displays active layout type (`AUTO NEST`, `MANUAL EDIT`, or `REGENERATED AUTO NEST`) dynamically.
+
 ---
 
 ## 📂 Project Architecture
