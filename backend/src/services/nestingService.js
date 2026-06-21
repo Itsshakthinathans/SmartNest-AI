@@ -120,6 +120,134 @@ function groupPolygonsByHierarchy(subPolys) {
   return resultPolys;
 }
 
+function mergeSegments(subPolys, tolerance = 1.0) {
+  const toleranceSq = tolerance * tolerance;
+  const closed = [];
+  const open = [];
+
+  for (const poly of subPolys) {
+    if (!poly || poly.length === 0) continue;
+    const first = poly[0];
+    const last = poly[poly.length - 1];
+    const dx = first.x - last.x;
+    const dy = first.y - last.y;
+    const dSq = dx * dx + dy * dy;
+    if (poly.length > 2 && dSq < toleranceSq) {
+      closed.push(poly);
+    } else {
+      open.push(poly);
+    }
+  }
+
+  let mergedAny = true;
+  while (mergedAny) {
+    mergedAny = false;
+    for (let i = 0; i < open.length; i++) {
+      const p1 = open[i];
+      if (!p1) continue;
+      const start1 = p1[0];
+      const end1 = p1[p1.length - 1];
+      let matchedIdx = -1;
+      let matchType = '';
+
+      for (let j = i + 1; j < open.length; j++) {
+        const p2 = open[j];
+        if (!p2) continue;
+        const start2 = p2[0];
+        const end2 = p2[p2.length - 1];
+
+        let dx = end1.x - start2.x;
+        let dy = end1.y - start2.y;
+        if (dx * dx + dy * dy < toleranceSq) {
+          matchedIdx = j;
+          matchType = 'es';
+          break;
+        }
+
+        dx = end1.x - end2.x;
+        dy = end1.y - end2.y;
+        if (dx * dx + dy * dy < toleranceSq) {
+          matchedIdx = j;
+          matchType = 'ee';
+          break;
+        }
+
+        dx = start1.x - end2.x;
+        dy = start1.y - end2.y;
+        if (dx * dx + dy * dy < toleranceSq) {
+          matchedIdx = j;
+          matchType = 'se';
+          break;
+        }
+
+        dx = start1.x - start2.x;
+        dy = start1.y - start2.y;
+        if (dx * dx + dy * dy < toleranceSq) {
+          matchedIdx = j;
+          matchType = 'ss';
+          break;
+        }
+      }
+
+      if (matchedIdx !== -1) {
+        const p2 = open[matchedIdx];
+        let newPoly;
+        if (matchType === 'es') {
+          newPoly = p1.concat(p2.slice(1));
+        } else if (matchType === 'ee') {
+          newPoly = p1.concat(p2.slice().reverse().slice(1));
+        } else if (matchType === 'se') {
+          newPoly = p2.concat(p1.slice(1));
+        } else if (matchType === 'ss') {
+          newPoly = p1.slice().reverse().concat(p2.slice(1));
+        }
+
+        open[i] = newPoly;
+        open.splice(matchedIdx, 1);
+        mergedAny = true;
+
+        const first = newPoly[0];
+        const last = newPoly[newPoly.length - 1];
+        const dx = first.x - last.x;
+        const dy = first.y - last.y;
+        if (newPoly.length > 2 && (dx * dx + dy * dy < toleranceSq)) {
+          closed.push(newPoly);
+          open.splice(i, 1);
+        }
+        break;
+      }
+    }
+  }
+
+  for (const p of open) {
+    if (p.length > 2) {
+      const first = p[0];
+      const last = p[p.length - 1];
+      const dx = first.x - last.x;
+      const dy = first.y - last.y;
+      if (dx * dx + dy * dy < toleranceSq * 9) {
+        closed.push(p);
+      }
+    }
+  }
+
+  for (const poly of closed) {
+    while (poly.length > 2) {
+      const first = poly[0];
+      const last = poly[poly.length - 1];
+      const dx = first.x - last.x;
+      const dy = first.y - last.y;
+      if (dx * dx + dy * dy < toleranceSq) {
+        poly.pop();
+      } else {
+        break;
+      }
+    }
+  }
+
+  return closed;
+}
+
 // ==========================================
 // 2. Geometry Helper Functions
 // ==========================================
@@ -951,7 +1079,7 @@ const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', s
 
     const fileQty = f.quantity ? parseInt(f.quantity, 10) : 1;
     let pathCount = 0;
-    const rawPolys = [];
+    const allSegments = [];
 
     for (let i = 0; i < paths.length; i++) {
       const pathEl = paths[i];
@@ -960,14 +1088,22 @@ const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', s
 
       const subPolys = preprocessor.pointsOnSvgPath(d, 0.5);
       subPolys.forEach((poly) => {
-        if (poly.length > 2) {
-          const area = Math.abs(GeometryUtil.polygonArea(poly));
-          if (area > 1) { // ignore noise
-            rawPolys.push(poly);
-          }
+        if (poly && poly.length >= 2) {
+          allSegments.push(poly);
         }
       });
     }
+
+    const mergedPolys = mergeSegments(allSegments, 1.0);
+    const rawPolys = [];
+    mergedPolys.forEach((poly) => {
+      if (poly.length > 2) {
+        const area = Math.abs(GeometryUtil.polygonArea(poly));
+        if (area > 1) { // ignore noise
+          rawPolys.push(poly);
+        }
+      }
+    });
 
     // Group polygons into a nested hierarchy (parents with internal hole child arrays)
     const filePolys = groupPolygonsByHierarchy(rawPolys);
@@ -1236,7 +1372,7 @@ const calculateFileArea = async (filePath, fileName) => {
   const doc = new DOMParser().parseFromString(preprocRes.result, 'image/svg+xml');
   const paths = doc.getElementsByTagName('path');
 
-  const rawPolys = [];
+  const allSegments = [];
 
   for (let i = 0; i < paths.length; i++) {
     const pathEl = paths[i];
@@ -1245,14 +1381,22 @@ const calculateFileArea = async (filePath, fileName) => {
 
     const subPolys = preprocessor.pointsOnSvgPath(d, 0.5);
     subPolys.forEach((poly) => {
-      if (poly.length > 2) {
-        const area = Math.abs(GeometryUtil.polygonArea(poly));
-        if (area > 1) { // ignore noise
-          rawPolys.push(poly);
-        }
+      if (poly && poly.length >= 2) {
+        allSegments.push(poly);
       }
     });
   }
+
+  const mergedPolys = mergeSegments(allSegments, 1.0);
+  const rawPolys = [];
+  mergedPolys.forEach((poly) => {
+    if (poly.length > 2) {
+      const area = Math.abs(GeometryUtil.polygonArea(poly));
+      if (area > 1) { // ignore noise
+        rawPolys.push(poly);
+      }
+    }
+  });
 
   const grouped = groupPolygonsByHierarchy(rawPolys);
   let fileArea = 0;
@@ -1312,18 +1456,26 @@ const updateLayoutFiles = async (jobId, projectFiles, placements) => {
     const paths = doc.getElementsByTagName('path');
 
     const fileQty = f.quantity ? parseInt(f.quantity, 10) : 1;
-    const rawPolys = [];
+    const allSegments = [];
 
     for (let i = 0; i < paths.length; i++) {
       const d = paths[i].getAttribute('d');
       if (!d) continue;
       const subPolys = preprocessor.pointsOnSvgPath(d, 0.5);
       subPolys.forEach((poly) => {
-        if (poly.length > 2 && Math.abs(GeometryUtil.polygonArea(poly)) > 1) {
-          rawPolys.push(poly);
+        if (poly && poly.length >= 2) {
+          allSegments.push(poly);
         }
       });
     }
+
+    const mergedPolys = mergeSegments(allSegments, 1.0);
+    const rawPolys = [];
+    mergedPolys.forEach((poly) => {
+      if (poly.length > 2 && Math.abs(GeometryUtil.polygonArea(poly)) > 1) {
+        rawPolys.push(poly);
+      }
+    });
 
     const filePolys = groupPolygonsByHierarchy(rawPolys);
     for (let q = 0; q < fileQty; q++) {
