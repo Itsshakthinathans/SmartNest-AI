@@ -134,6 +134,12 @@ export const api = {
   exportJSON: async (jobId) => {
     return apiClient.get(`/export/json/${jobId}`, { responseType: 'blob' });
   },
+
+  // AI Copilot
+  chatCopilot: async (jobId, message) => {
+    const response = await apiClient.post('/copilot/chat', { jobId, message });
+    return response.data;
+  },
 };
 
 export default api;

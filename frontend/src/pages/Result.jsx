@@ -13,6 +13,8 @@ import {
   FormControlLabel,
   Switch,
   IconButton,
+  TextField,
+  Chip,
 } from '@mui/material';
 import {
   ArrowBack as BackIcon,
@@ -26,6 +28,10 @@ import {
   Code as JsonIcon,
   InsertPhoto as SvgIcon,
   Download as DownloadIcon,
+  Send as SendIcon,
+  Chat as ChatIcon,
+  SmartToy as CopilotIcon,
+  Person as UserIcon,
 } from '@mui/icons-material';
 import api from '../services/api';
 
@@ -94,6 +100,13 @@ export default function Result() {
 
   const [resetLoading, setResetLoading] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+
+  // AI Copilot state
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatError, setChatError] = useState(null);
+  const chatEndRef = useRef(null);
 
   const handleExport = async (format) => {
     setExportLoading(prev => ({ ...prev, [format]: true }));
@@ -176,6 +189,25 @@ export default function Result() {
       }
     };
   }, [jobId]);
+
+  // Initialize AI Copilot Welcome Message
+  useEffect(() => {
+    if (result) {
+      setChatMessages([
+        {
+          sender: 'copilot',
+          text: `Hello! I am your SmartNest AI Copilot. I have analyzed Nesting Job #${jobId} for the project "${result.projectName || result.project_name || 'Project'}". How can I help you optimize your layout, remnants, or costing?`
+        }
+      ]);
+    }
+  }, [result]);
+
+  // Scroll to bottom on new messages
+  useEffect(() => {
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages]);
 
   // Handle programmatically attaching wheel listener to prevent standard page scroll
   useEffect(() => {
@@ -490,6 +522,35 @@ export default function Result() {
       setSavingLayout(false);
     }
   };
+
+  const handleSendChatMessage = async (overrideMessage = null) => {
+    const textToSend = overrideMessage !== null ? overrideMessage : chatInput;
+    if (!textToSend || !textToSend.trim()) return;
+
+    const userMsg = { sender: 'user', text: textToSend };
+    setChatMessages(prev => [...prev, userMsg]);
+    if (overrideMessage === null) {
+      setChatInput('');
+    }
+    
+    setChatLoading(true);
+    setChatError(null);
+
+    try {
+      const res = await api.chatCopilot(jobId, textToSend);
+      if (res.success && res.answer) {
+        setChatMessages(prev => [...prev, { sender: 'copilot', text: res.answer }]);
+      } else {
+        setChatError('Received invalid response format from Copilot.');
+      }
+    } catch (err) {
+      console.error('Copilot message delivery failed:', err);
+      setChatError(err.response?.data?.message || 'Failed to connect to AI Copilot.');
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
 
   const fetchResult = async () => {
     try {
@@ -1487,6 +1548,187 @@ export default function Result() {
                   }}
                 >
                   {regenerating ? 'Re-Generating...' : 'Re-Generate Nest'}
+                </Button>
+              </Box>
+            </Paper>
+
+            {/* AI Copilot Panel */}
+            <Paper
+              sx={{
+                mt: 3,
+                p: 3,
+                bgcolor: '#0f1319',
+                border: '1px solid rgba(13, 148, 136, 0.25)',
+                borderRadius: '12px',
+                boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)',
+                display: 'flex',
+                flexDirection: 'column',
+                height: '520px'
+              }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 1.5 }}>
+                <ChatIcon sx={{ color: '#06b6d4' }} />
+                <Typography variant="h6" sx={{ color: '#ffffff', fontWeight: 800 }}>
+                  AI Copilot V1
+                </Typography>
+              </Box>
+              <Typography variant="caption" sx={{ color: '#565f89', display: 'block', mb: 2 }}>
+                Chat with SmartNest Assistant about utilization, costing, remnants, or layout optimizations.
+              </Typography>
+              <Divider sx={{ borderColor: 'rgba(255,255,255,0.06)', mb: 2 }} />
+
+              {/* Chat Messages Log */}
+              <Box
+                sx={{
+                  flex: 1,
+                  overflowY: 'auto',
+                  mb: 2,
+                  pr: 1,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 1.5,
+                  '&::-webkit-scrollbar': {
+                    width: '6px'
+                  },
+                  '&::-webkit-scrollbar-thumb': {
+                    bgcolor: 'rgba(255,255,255,0.05)',
+                    borderRadius: '3px'
+                  }
+                }}
+              >
+                {chatMessages.map((msg, i) => (
+                  <Box
+                    key={i}
+                    sx={{
+                      display: 'flex',
+                      justifyContent: msg.sender === 'user' ? 'flex-end' : 'flex-start',
+                      alignItems: 'flex-start',
+                      gap: 1
+                    }}
+                  >
+                    {msg.sender === 'copilot' && (
+                      <CopilotIcon sx={{ color: '#06b6d4', fontSize: '1.25rem', mt: 0.5 }} />
+                    )}
+                    <Box
+                      sx={{
+                        maxWidth: '75%',
+                        bgcolor: msg.sender === 'user' ? '#0d9488' : 'rgba(255,255,255,0.03)',
+                        color: '#ffffff',
+                        p: 1.5,
+                        borderRadius: msg.sender === 'user' ? '12px 12px 0 12px' : '0 12px 12px 12px',
+                        border: msg.sender === 'user' ? 'none' : '1px solid rgba(255,255,255,0.05)',
+                        fontSize: '0.85rem',
+                        lineHeight: 1.5,
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word'
+                      }}
+                    >
+                      {msg.text}
+                    </Box>
+                    {msg.sender === 'user' && (
+                      <UserIcon sx={{ color: '#a9b1d6', fontSize: '1.25rem', mt: 0.5 }} />
+                    )}
+                  </Box>
+                ))}
+
+                {chatLoading && (
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: '#a9b1d6', fontSize: '0.8rem', fontStyle: 'italic', pl: 3.5 }}>
+                    <CircularProgress size={12} color="inherit" />
+                    Copilot is thinking...
+                  </Box>
+                )}
+
+                {chatError && (
+                  <Alert
+                    severity="error"
+                    variant="outlined"
+                    sx={{
+                      fontSize: '0.8rem',
+                      borderColor: 'rgba(239, 68, 68, 0.2)',
+                      color: '#ef4444',
+                      py: 0,
+                      '& .MuiAlert-icon': { color: '#ef4444', fontSize: '1.1rem' }
+                    }}
+                  >
+                    {chatError}
+                  </Alert>
+                )}
+                <div ref={chatEndRef} />
+              </Box>
+
+              {/* Suggested Questions */}
+              <Box sx={{ mb: 2, display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                {[
+                  { text: 'Improve Utilization', q: 'How can I improve utilization for this nesting job?' },
+                  { text: 'Reduce Material Cost', q: 'How can I reduce material cost for this job?' },
+                  { text: 'Analyze Remnant', q: 'Can you analyze the remaining remnant area and value?' },
+                  { text: 'Explain AI Recommendations', q: 'Explain the AI Advisor recommendations for this layout.' },
+                  { text: 'Sheet Optimization Suggestions', q: 'What sheet size suggestions do you have to optimize nesting?' }
+                ].map((sug, idx) => (
+                  <Chip
+                    key={idx}
+                    label={sug.text}
+                    onClick={() => handleSendChatMessage(sug.q)}
+                    disabled={chatLoading}
+                    sx={{
+                      bgcolor: 'rgba(6, 182, 212, 0.04)',
+                      border: '1px solid rgba(6, 182, 212, 0.15)',
+                      color: '#06b6d4',
+                      fontSize: '0.75rem',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      '&:hover': {
+                        bgcolor: 'rgba(6, 182, 212, 0.08)',
+                        borderColor: '#06b6d4'
+                      },
+                      '&.Mui-disabled': {
+                        opacity: 0.5,
+                        cursor: 'not-allowed'
+                      }
+                    }}
+                  />
+                ))}
+              </Box>
+
+              {/* Chat Input form */}
+              <Box component="form" onSubmit={(e) => { e.preventDefault(); handleSendChatMessage(); }} sx={{ display: 'flex', gap: 1 }}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  placeholder="Ask a question about this nesting job..."
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  disabled={chatLoading}
+                  autoComplete="off"
+                  sx={{
+                    '& .MuiOutlinedInput-root': {
+                      color: '#ffffff',
+                      bgcolor: '#090b0e',
+                      '& fieldset': {
+                        borderColor: 'rgba(255,255,255,0.08)'
+                      },
+                      '&:hover fieldset': {
+                        borderColor: 'rgba(255,255,255,0.15)'
+                      },
+                      '&.Mui-focused fieldset': {
+                        borderColor: '#0d9488'
+                      }
+                    }
+                  }}
+                />
+                <Button
+                  type="submit"
+                  variant="contained"
+                  disabled={chatLoading || !chatInput.trim()}
+                  sx={{
+                    bgcolor: '#0d9488',
+                    color: '#ffffff',
+                    minWidth: '50px',
+                    '&:hover': { bgcolor: '#0f766e' },
+                    '&.Mui-disabled': { bgcolor: 'rgba(255,255,255,0.03)', color: 'rgba(255,255,255,0.2)' }
+                  }}
+                >
+                  <SendIcon sx={{ fontSize: '1.1rem' }} />
                 </Button>
               </Box>
             </Paper>
