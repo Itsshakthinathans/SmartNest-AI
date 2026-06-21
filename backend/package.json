@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js",
+    "dev": "nodemon --ignore src/uploads/ server.js",
     "migrate": "node src/config/migrate.js"
   },
   "keywords": [],
@@ -21,7 +21,9 @@
     "express": "^5.2.1",
     "form-data": "^4.0.5",
     "multer": "^2.1.1",
-    "pg": "^8.21.0"
+    "pdfkit": "^0.19.1",
+    "pg": "^8.21.0",
+    "sharp": "^0.35.2"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"

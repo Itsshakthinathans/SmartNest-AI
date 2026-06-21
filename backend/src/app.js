@@ -6,6 +6,7 @@ const fileRoutes = require('./routes/fileRoutes');
 const nestingRoutes = require('./routes/nestingRoutes');
 const remnantRoutes = require('./routes/remnantRoutes');
 const aiRoutes = require('./routes/aiRoutes');
+const exportRoutes = require('./routes/exportRoutes');
 
 const app = express();
 
@@ -25,5 +26,6 @@ app.use('/api/files', fileRoutes);
 app.use('/api/nesting', nestingRoutes);
 app.use('/api/remnants', remnantRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/export', exportRoutes);
 
 module.exports = app;

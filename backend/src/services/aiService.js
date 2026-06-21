@@ -46,10 +46,13 @@ You MUST return the output as a valid JSON object matching this schema exactly:
   "summary": "Concise summary of layout performance, cost metrics, and overall material yield.",
   "recommendations": [
     "Specific actionable recommendation 1...",
-    "Specific actionable recommendation 2...",
-    "Specific actionable recommendation 3..."
+    "Specific actionable recommendation 2..."
   ],
-  "estimatedSavings": "A projected saving statement in ₹ or %, e.g., '₹ 1,200 (approx. 8% savings by increasing utilization by 5% or reusing the RM-0001 remnant)'"
+  "estimatedSavings": "A projected saving statement in ₹ or %, e.g., '₹ 1,200 (approx. 8% savings by increasing utilization by 5% or reusing the RM-0001 remnant)'",
+  "optimizationSummary": "Detailed layout optimization summary details matching the summary.",
+  "manufacturingRecommendations": ["Manufacturing/placement action 1", "Manufacturing/placement action 2"],
+  "materialUsageSuggestions": ["Material usage/sheet size suggestion 1"],
+  "remnantReuseSuggestions": ["Remnant recovery or reuse suggestion 1"]
 }
 `;
 
@@ -66,9 +69,26 @@ You MUST return the output as a valid JSON object matching this schema exactly:
             type: 'ARRAY',
             items: { type: 'STRING' }
           },
-          estimatedSavings: { type: 'STRING' }
+          estimatedSavings: { type: 'STRING' },
+          optimizationSummary: { type: 'STRING' },
+          manufacturingRecommendations: {
+            type: 'ARRAY',
+            items: { type: 'STRING' }
+          },
+          materialUsageSuggestions: {
+            type: 'ARRAY',
+            items: { type: 'STRING' }
+          },
+          remnantReuseSuggestions: {
+            type: 'ARRAY',
+            items: { type: 'STRING' }
+          }
         },
-        required: ['summary', 'recommendations', 'estimatedSavings']
+        required: [
+          'summary', 'recommendations', 'estimatedSavings', 
+          'optimizationSummary', 'manufacturingRecommendations', 
+          'materialUsageSuggestions', 'remnantReuseSuggestions'
+        ]
       }
     }
   });

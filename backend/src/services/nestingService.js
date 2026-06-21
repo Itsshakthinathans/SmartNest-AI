@@ -1279,7 +1279,7 @@ const updateLayoutFiles = async (jobId, projectFiles, placements) => {
   prepareEnvironment();
 
   for (let f of projectFiles) {
-    const absolutePath = path.join(__dirname, '../uploads/projects', String(projectId), f.file_name);
+    const absolutePath = path.join(__dirname, '..', f.file_path);
     const cachedSvgPath = absolutePath + '.svg';
     let svgString = '';
 

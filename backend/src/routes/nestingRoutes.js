@@ -17,4 +17,10 @@ router.get('/layout/:jobId', nestingController.getLayoutPlacements);
 // 5. Update Layout Placements
 router.put('/layout/:jobId', nestingController.updateLayoutPlacements);
 
+// 6. Reset Layout
+router.post('/reset/:jobId', nestingController.resetLayout);
+
+// 7. Regenerate Layout
+router.post('/regenerate/:jobId', nestingController.regenerateLayout);
+
 module.exports = router;

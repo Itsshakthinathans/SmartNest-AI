@@ -22,6 +22,10 @@ import {
   ZoomOut as ZoomOutIcon,
   RestartAlt as ResetIcon,
   AutoAwesome as AdvisorIcon,
+  PictureAsPdf as PdfIcon,
+  Code as JsonIcon,
+  InsertPhoto as SvgIcon,
+  Download as DownloadIcon,
 } from '@mui/icons-material';
 import api from '../services/api';
 
@@ -64,6 +68,9 @@ export default function Result() {
   const [localParts, setLocalParts] = useState([]);
   const [selectedPartId, setSelectedPartId] = useState(null);
   const [savingLayout, setSavingLayout] = useState(false);
+  const [draggingPartId, setDraggingPartId] = useState(null);
+  const [dragStartMouse, setDragStartMouse] = useState({ x: 0, y: 0 });
+  const [dragStartPartPos, setDragStartPartPos] = useState({ x: 0, y: 0 });
 
   // Preview options
   const [showLabels, setShowLabels] = useState(false);
@@ -79,7 +86,73 @@ export default function Result() {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
-  const [hoveredPartIndex, setHoveredPartIndex] = useState(null);
+  const [hoveredPartId, setHoveredPartId] = useState(null);
+
+  // Export Center states
+  const [exportLoading, setExportLoading] = useState({ pdf: false, svg: false, json: false });
+  const [exportStatus, setExportStatus] = useState({ type: '', message: '' });
+
+  const [resetLoading, setResetLoading] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
+
+  const handleExport = async (format) => {
+    setExportLoading(prev => ({ ...prev, [format]: true }));
+    setExportStatus({ type: '', message: '' });
+
+    try {
+      let response;
+      let filename = `nest_layout_${jobId}.${format}`;
+      
+      if (format === 'pdf') {
+        response = await api.exportPDF(jobId);
+        filename = `SmartNest_Report_Job_${jobId}.pdf`;
+      } else if (format === 'svg') {
+        response = await api.exportSVG(jobId);
+        filename = `nested_output_job_${jobId}.svg`;
+      } else if (format === 'json') {
+        response = await api.exportJSON(jobId);
+        filename = `nesting_layout_job_${jobId}.json`;
+      }
+
+      // Convert response blob to download link
+      const blob = new Blob([response.data], { type: response.headers['content-type'] });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      
+      // Clean up
+      link.remove();
+      window.URL.revokeObjectURL(url);
+
+      setExportStatus({
+        type: 'success',
+        message: `Successfully exported nesting job as ${format.toUpperCase()}!`
+      });
+    } catch (err) {
+      console.error(`Export to ${format} failed:`, err);
+      let errorMsg = `Failed to generate or download ${format.toUpperCase()} file.`;
+      if (err.response && err.response.data instanceof Blob) {
+        try {
+          const text = await err.response.data.text();
+          const parsed = JSON.parse(text);
+          if (parsed && parsed.message) errorMsg = parsed.message;
+        } catch (e) {
+          // ignore
+        }
+      } else if (err.message) {
+        errorMsg = err.message;
+      }
+      setExportStatus({
+        type: 'error',
+        message: errorMsg
+      });
+    } finally {
+      setExportLoading(prev => ({ ...prev, [format]: false }));
+    }
+  };
 
   // Monitor elapsed time
   useEffect(() => {
@@ -255,8 +328,10 @@ export default function Result() {
 
       if (currentStatus === 'completed') {
         fetchResult();
+        setRegenerating(false);
       } else if (currentStatus === 'failed') {
         setError('The nesting calculations encountered a geometry error and failed.');
+        setRegenerating(false);
       } else {
         pollTimerRef.current = setTimeout(pollStatus, 1500);
       }
@@ -264,6 +339,38 @@ export default function Result() {
       console.error('Error polling status:', err);
       setError('Loss of contact with nesting runner. Checking connection...');
       pollTimerRef.current = setTimeout(pollStatus, 3000);
+    }
+  };
+
+  const handleResetToAutoNest = async () => {
+    try {
+      setResetLoading(true);
+      const res = await api.resetLayout(jobId);
+      if (res.success) {
+        alert(res.message);
+        await fetchResult();
+      }
+    } catch (err) {
+      console.error('Error resetting layout:', err);
+      alert('Failed to reset layout: ' + (err.response?.data?.message || err.message));
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
+  const handleRegenerateNest = async () => {
+    try {
+      setRegenerating(true);
+      const res = await api.regenerateLayout(jobId);
+      if (res.success) {
+        setStatus('processing');
+        setElapsedSeconds(0);
+        pollStatus();
+      }
+    } catch (err) {
+      console.error('Error regenerating layout:', err);
+      alert('Failed to regenerate layout: ' + (err.response?.data?.message || err.message));
+      setRegenerating(false);
     }
   };
 
@@ -282,6 +389,22 @@ export default function Result() {
       setAiError('Unable to generate AI optimization suggestions.');
     } finally {
       setAiLoading(false);
+    }
+  };
+
+  const handlePartMouseDown = (e, partId) => {
+    if (!isEditMode) return;
+    
+    // Stop propagation so canvas drag doesn't trigger
+    e.stopPropagation();
+    
+    setSelectedPartId(partId);
+    setDraggingPartId(partId);
+    setDragStartMouse({ x: e.clientX, y: e.clientY });
+    
+    const part = localParts.find(p => p.id === partId);
+    if (part) {
+      setDragStartPartPos({ x: part.x, y: part.y });
     }
   };
 
@@ -423,12 +546,30 @@ export default function Result() {
   };
 
   const handleMouseMove = (e) => {
-    if (!isDragging) return;
-    setPan({ x: e.clientX - dragStart.x, y: e.clientY - dragStart.y });
+    if (draggingPartId !== null) {
+      const dxScreen = e.clientX - dragStartMouse.x;
+      const dyScreen = e.clientY - dragStartMouse.y;
+      const dxModel = dxScreen / zoom;
+      const dyModel = dyScreen / zoom;
+      
+      setLocalParts(prevParts => prevParts.map(p => {
+        if (p.id === draggingPartId) {
+          return {
+            ...p,
+            x: dragStartPartPos.x + dxModel,
+            y: dragStartPartPos.y + dyModel
+          };
+        }
+        return p;
+      }));
+    } else if (isDragging) {
+      setPan({ x: e.clientX - dragStart.x, y: e.clientY - dragStart.y });
+    }
   };
 
   const handleMouseUp = () => {
     setIsDragging(false);
+    setDraggingPartId(null);
   };
 
   const handleZoomIn = () => setZoom(z => Math.min(10, z * 1.25));
@@ -571,6 +712,17 @@ export default function Result() {
                     <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Material</Typography>
                     <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
                       {result?.materialType || 'Mild Steel'}
+                    </Typography>
+                  </Box>
+                  <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Layout Source</Typography>
+                    <Typography variant="body2" sx={{ 
+                      color: result?.layoutSource === 'MANUAL EDIT' ? '#ec4899' : (result?.layoutSource === 'REGENERATED AUTO NEST' ? '#bb9af7' : '#0d9488'), 
+                      fontWeight: 800,
+                      fontSize: '0.85rem'
+                    }}>
+                      {result?.layoutSource || 'AUTO NEST'}
                     </Typography>
                   </Box>
                   <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
@@ -743,7 +895,7 @@ export default function Result() {
                   </Box>
                 ) : aiError ? (
                   <Box sx={{ py: 1 }}>
-                    <Alert severity="warning" variant="outlined" sx={{ color: '#f7768e', borderColor: 'rgba(247,118,142,0.2)', '& .MuiAlert-icon': { color: '#f7768e' } }}>
+                    <Alert severity="warning" variant="outlined" sx={{ color: '#f7768e', borderColor: 'rgba(247,118,142,0.2)', '& .MuiAlert-icon': { color: '#f7768e' }, wordBreak: 'break-word' }}>
                       {aiError}
                     </Alert>
                     <Button 
@@ -758,7 +910,7 @@ export default function Result() {
                 ) : aiData ? (
                   <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                     <Box>
-                      <Typography variant="body2" sx={{ color: '#ffffff', lineHeight: 1.6, fontWeight: 500 }}>
+                      <Typography variant="body2" sx={{ color: '#ffffff', lineHeight: 1.6, fontWeight: 500, wordBreak: 'break-word' }}>
                         {aiData.summary}
                       </Typography>
                     </Box>
@@ -771,7 +923,7 @@ export default function Result() {
                       </Typography>
                       <Box component="ul" sx={{ m: 0, pl: 2, color: '#a9b1d6', display: 'flex', flexDirection: 'column', gap: 1 }}>
                         {aiData.recommendations.map((rec, i) => (
-                          <Box component="li" key={i} sx={{ fontSize: '0.8rem', lineHeight: 1.5 }}>
+                          <Box component="li" key={i} sx={{ fontSize: '0.8rem', lineHeight: 1.5, wordBreak: 'break-word' }}>
                             {rec}
                           </Box>
                         ))}
@@ -784,7 +936,7 @@ export default function Result() {
                       <Typography variant="caption" sx={{ color: '#06b6d4', fontWeight: 800, display: 'block', textTransform: 'uppercase', mb: 0.5 }}>
                         Potential Savings
                       </Typography>
-                      <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
+                      <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700, wordBreak: 'break-word' }}>
                         {aiData.estimatedSavings}
                       </Typography>
                     </Box>
@@ -828,18 +980,33 @@ export default function Result() {
                       if (!part) return null;
                       return (
                         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                          <Box sx={{ bgcolor: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '8px', p: 1.5 }}>
-                            <Typography variant="body2" sx={{ color: '#ec4899', fontWeight: 700, mb: 0.5 }}>
-                              Selected: Part #{part.id}
+                          <Box sx={{ bgcolor: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '8px', p: 2 }}>
+                            <Typography variant="subtitle2" sx={{ color: '#ec4899', fontWeight: 800, mb: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <span>Selected Part #{part.id}</span>
+                              {draggingPartId === part.id && (
+                                <Box sx={{ fontSize: '0.7rem', color: '#10b981', bgcolor: 'rgba(16, 185, 129, 0.1)', px: 1, py: 0.2, borderRadius: '4px', border: '1px solid rgba(16, 185, 129, 0.2)' }}>
+                                  Dragging...
+                                </Box>
+                              )}
                             </Typography>
-                            <Typography variant="caption" sx={{ color: '#a9b1d6', display: 'block', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                            <Typography variant="caption" sx={{ color: '#565f89', display: 'block', mb: 1.5, textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
                               File: {part.filename}
                             </Typography>
-                            <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 1, color: '#a9b1d6' }}>
-                              <Typography variant="caption">X: {Math.round(part.x)} mm</Typography>
-                              <Typography variant="caption">Y: {Math.round(part.y)} mm</Typography>
-                              <Typography variant="caption">Rot: {part.rotation}°</Typography>
-                            </Box>
+                            <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)', mb: 1.5 }} />
+                            <Grid container spacing={2}>
+                              <Grid item xs={4}>
+                                <Typography variant="caption" sx={{ color: '#565f89', display: 'block', textTransform: 'uppercase', fontWeight: 700 }}>X Position</Typography>
+                                <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>{Math.round(part.x)} mm</Typography>
+                              </Grid>
+                              <Grid item xs={4}>
+                                <Typography variant="caption" sx={{ color: '#565f89', display: 'block', textTransform: 'uppercase', fontWeight: 700 }}>Y Position</Typography>
+                                <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>{Math.round(part.y)} mm</Typography>
+                              </Grid>
+                              <Grid item xs={4}>
+                                <Typography variant="caption" sx={{ color: '#565f89', display: 'block', textTransform: 'uppercase', fontWeight: 700 }}>Rotation</Typography>
+                                <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>{part.rotation}°</Typography>
+                              </Grid>
+                            </Grid>
                           </Box>
 
                           {/* Control Buttons */}
@@ -964,23 +1131,112 @@ export default function Result() {
                 </Paper>
               )}
 
-              {/* Output Path information */}
-              <Paper sx={{ p: 3, bgcolor: '#0f1319', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '12px' }}>
-                <Typography variant="subtitle2" sx={{ color: '#565f89', fontWeight: 700, textTransform: 'uppercase', mb: 1 }}>
-                  Output SVG Path
+              {/* Export Center V1 */}
+              <Paper 
+                sx={{ 
+                  p: 3, 
+                  bgcolor: '#0f1319', 
+                  border: '1px solid rgba(13, 148, 136, 0.25)', 
+                  borderRadius: '12px',
+                  boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)'
+                }}
+              >
+                <Typography variant="subtitle2" sx={{ color: '#0d9488', fontWeight: 800, textTransform: 'uppercase', mb: 1, letterSpacing: '0.05em' }}>
+                  📦 Export Center V1
                 </Typography>
-                <Typography variant="body2" sx={{ color: '#a9b1d6', fontFamily: 'monospace', fontSize: '0.8rem', wordBreak: 'break-all', mb: 2 }}>
-                  {result?.outputFile}
+                <Typography variant="caption" sx={{ color: '#565f89', display: 'block', mb: 2.5 }}>
+                  Download production-ready drawings, coordinate sheets, and executive PDF reports.
                 </Typography>
-                <Button
-                  variant="outlined"
-                  size="small"
-                  href={`http://localhost:5000/${result?.outputFile}`}
-                  target="_blank"
-                  sx={{ color: '#0d9488', borderColor: '#0d9488', textTransform: 'none', fontWeight: 700 }}
-                >
-                  Download SVG File
-                </Button>
+
+                {exportStatus.message && (
+                  <Alert 
+                    severity={exportStatus.type} 
+                    variant="outlined" 
+                    onClose={() => setExportStatus({ type: '', message: '' })}
+                    sx={{ 
+                      mb: 2.5, 
+                      fontSize: '0.8rem',
+                      borderColor: exportStatus.type === 'success' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                      color: exportStatus.type === 'success' ? '#10b981' : '#ef4444',
+                      '& .MuiAlert-icon': { color: exportStatus.type === 'success' ? '#10b981' : '#ef4444' }
+                    }}
+                  >
+                    {exportStatus.message}
+                  </Alert>
+                )}
+
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                  {/* Export PDF */}
+                  <Button
+                    variant="contained"
+                    disabled={exportLoading.pdf}
+                    onClick={() => handleExport('pdf')}
+                    startIcon={exportLoading.pdf ? <CircularProgress size={16} color="inherit" /> : <PdfIcon />}
+                    sx={{
+                      bgcolor: '#0d9488',
+                      color: '#ffffff',
+                      textTransform: 'none',
+                      fontWeight: 700,
+                      justifyContent: 'flex-start',
+                      px: 2,
+                      py: 1,
+                      '&:hover': { bgcolor: '#0f766e' },
+                      '&.Mui-disabled': { bgcolor: 'rgba(13, 148, 136, 0.1)', color: 'rgba(255, 255, 255, 0.3)' }
+                    }}
+                  >
+                    {exportLoading.pdf ? 'Generating PDF...' : '📄 Export PDF Report'}
+                  </Button>
+
+                  {/* Export SVG */}
+                  <Button
+                    variant="outlined"
+                    disabled={exportLoading.svg}
+                    onClick={() => handleExport('svg')}
+                    startIcon={exportLoading.svg ? <CircularProgress size={16} color="inherit" /> : <SvgIcon />}
+                    sx={{
+                      borderColor: 'rgba(255, 255, 255, 0.12)',
+                      color: '#a9b1d6',
+                      textTransform: 'none',
+                      fontWeight: 700,
+                      justifyContent: 'flex-start',
+                      px: 2,
+                      py: 1,
+                      '&:hover': { 
+                        borderColor: '#06b6d4', 
+                        bgcolor: 'rgba(6, 182, 212, 0.04)',
+                        color: '#06b6d4'
+                      },
+                      '&.Mui-disabled': { borderColor: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.2)' }
+                    }}
+                  >
+                    {exportLoading.svg ? 'Fetching SVG...' : '🖼 Export SVG Layout'}
+                  </Button>
+
+                  {/* Export JSON */}
+                  <Button
+                    variant="outlined"
+                    disabled={exportLoading.json}
+                    onClick={() => handleExport('json')}
+                    startIcon={exportLoading.json ? <CircularProgress size={16} color="inherit" /> : <JsonIcon />}
+                    sx={{
+                      borderColor: 'rgba(255, 255, 255, 0.12)',
+                      color: '#a9b1d6',
+                      textTransform: 'none',
+                      fontWeight: 700,
+                      justifyContent: 'flex-start',
+                      px: 2,
+                      py: 1,
+                      '&:hover': { 
+                        borderColor: '#bb9af7', 
+                        bgcolor: 'rgba(187, 154, 247, 0.04)',
+                        color: '#bb9af7'
+                      },
+                      '&.Mui-disabled': { borderColor: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.2)' }
+                    }}
+                  >
+                    {exportLoading.json ? 'Structuring JSON...' : '📦 Export JSON Layout'}
+                  </Button>
+                </Box>
               </Paper>
             </Box>
           </Grid>
@@ -1099,74 +1355,82 @@ export default function Result() {
                         />
                       )}
 
-                      {/* Render Parsed Polygons */}
-                      {parsedPolygons.map((poly, idx) => {
-                        const isHovered = hoveredPartIndex === idx;
-                        const labelScale = Math.max(0.4, Math.min(2.5, 1 / zoom));
-                        const showLabel = showLabels && poly.area > 2000 && (poly.width > 35 && poly.height > 35);
-                        
-                        // Manual Nest Adjustment styling
-                        const part = localParts.find(p => p.id === poly.id);
-                        let transformStr = '';
-                        let isSelected = false;
+                      {/* Render Parsed Polygons sorted by selection for proper overlay layering */}
+                      {[...parsedPolygons]
+                        .sort((a, b) => {
+                          if (a.id === selectedPartId) return 1;
+                          if (b.id === selectedPartId) return -1;
+                          return 0;
+                        })
+                        .map((poly, idx) => {
+                          const isHovered = hoveredPartId === poly.id;
+                          const labelScale = Math.max(0.4, Math.min(2.5, 1 / zoom));
+                          const showLabel = showLabels && poly.area > 2000 && (poly.width > 35 && poly.height > 35);
+                          
+                          // Manual Nest Adjustment styling
+                          const part = localParts.find(p => p.id === poly.id);
+                          let transformStr = '';
+                          let isSelected = false;
 
-                        if (part) {
-                          const dx = part.x - part.originalX;
-                          const dy = part.y - part.originalY;
-                          const dRot = part.rotation - part.originalRotation;
-                          transformStr = `translate(${dx}, ${dy}) rotate(${dRot}, ${poly.centroidX}, ${poly.centroidY})`;
-                          isSelected = selectedPartId === poly.id;
-                        }
+                          if (part) {
+                            const dx = part.x - part.originalX;
+                            const dy = part.y - part.originalY;
+                            const dRot = part.rotation - part.originalRotation;
+                            transformStr = `translate(${dx}, ${dy}) rotate(${dRot}, ${poly.centroidX}, ${poly.centroidY})`;
+                            isSelected = selectedPartId === poly.id;
+                          }
 
-                        let partFill = 'rgba(13, 148, 136, 0.12)';
-                        let partStroke = '#0d9488';
-                        let strokeWidth = 1.5;
+                          let partFill = 'rgba(13, 148, 136, 0.12)';
+                          let partStroke = '#0d9488';
+                          let strokeWidth = 1.5;
+                          let filterEffect = undefined;
 
-                        if (isSelected) {
-                          partFill = 'rgba(236, 72, 153, 0.35)';
-                          partStroke = '#ec4899';
-                          strokeWidth = 2.5;
-                        } else if (isHovered) {
-                          partFill = isEditMode ? 'rgba(236, 72, 153, 0.15)' : 'rgba(13, 148, 136, 0.35)';
-                          partStroke = isEditMode ? '#db2777' : '#38bdf8';
-                        }
+                          if (isSelected) {
+                            partFill = 'rgba(236, 72, 153, 0.35)';
+                            partStroke = '#ec4899';
+                            strokeWidth = 2.5;
+                            filterEffect = 'drop-shadow(0 0 8px rgba(236, 72, 153, 0.6))';
+                          } else if (isHovered) {
+                            partFill = isEditMode ? 'rgba(236, 72, 153, 0.15)' : 'rgba(13, 148, 136, 0.35)';
+                            partStroke = isEditMode ? '#db2777' : '#38bdf8';
+                          }
 
-                        return (
-                          <g key={idx} transform={transformStr}>
-                            <path
-                              d={poly.dStr}
-                              fill={partFill}
-                              stroke={partStroke}
-                              strokeWidth={strokeWidth}
-                              fillRule="evenodd"
-                              style={{ transition: 'fill 0.15s ease, stroke 0.15s ease', cursor: 'pointer' }}
-                              onClick={() => {
-                                if (isEditMode) {
-                                  setSelectedPartId(poly.id);
-                                }
-                              }}
-                              onMouseEnter={() => setHoveredPartIndex(idx)}
-                              onMouseLeave={() => setHoveredPartIndex(null)}
-                            />
-                            
-                            {showLabel && (
-                              <text
-                                x={poly.centroidX}
-                                y={poly.centroidY}
-                                fill={isSelected ? '#ffffff' : (isHovered ? '#ffffff' : '#a9b1d6')}
-                                fontSize={Math.max(6, Math.min(16, 11 * labelScale))}
-                                fontWeight="700"
-                                fontFamily="Consolas, Monaco, monospace"
-                                textAnchor="middle"
-                                alignmentBaseline="middle"
-                                style={{ pointerEvents: 'none', transition: 'fill 0.15s ease' }}
-                              >
-                                {poly.label}
-                              </text>
-                            )}
-                          </g>
-                        );
-                      })}
+                          return (
+                            <g key={poly.id || idx} transform={transformStr}>
+                              <path
+                                d={poly.dStr}
+                                fill={partFill}
+                                stroke={partStroke}
+                                strokeWidth={strokeWidth}
+                                fillRule="evenodd"
+                                style={{ 
+                                  transition: 'fill 0.15s ease, stroke 0.15s ease', 
+                                  cursor: isEditMode ? (draggingPartId === poly.id ? 'grabbing' : 'grab') : 'pointer',
+                                  filter: filterEffect
+                                }}
+                                onMouseDown={(e) => handlePartMouseDown(e, poly.id)}
+                                onMouseEnter={() => setHoveredPartId(poly.id)}
+                                onMouseLeave={() => setHoveredPartId(null)}
+                              />
+                              
+                              {showLabel && (
+                                <text
+                                  x={poly.centroidX}
+                                  y={poly.centroidY}
+                                  fill={isSelected ? '#ffffff' : (isHovered ? '#ffffff' : '#a9b1d6')}
+                                  fontSize={Math.max(6, Math.min(16, 11 * labelScale))}
+                                  fontWeight="700"
+                                  fontFamily="Consolas, Monaco, monospace"
+                                  textAnchor="middle"
+                                  alignmentBaseline="middle"
+                                  style={{ pointerEvents: 'none', transition: 'fill 0.15s ease' }}
+                                >
+                                  {poly.label}
+                                </text>
+                              )}
+                            </g>
+                          );
+                        })}
                     </g>
                   </svg>
                 ) : (
@@ -1175,6 +1439,55 @@ export default function Result() {
                     Loading visual preview...
                   </Box>
                 )}
+              </Box>
+
+              {/* Workflow controls for layout source switching */}
+              <Box sx={{ mt: 3, display: 'flex', gap: 2, width: '100%' }}>
+                <Button
+                  variant="outlined"
+                  onClick={handleResetToAutoNest}
+                  disabled={resetLoading || (result?.layoutSource === 'AUTO NEST' || result?.layoutSource === 'REGENERATED AUTO NEST')}
+                  startIcon={resetLoading ? <CircularProgress size={16} color="inherit" /> : <span>🔄</span>}
+                  sx={{
+                    flex: 1,
+                    textTransform: 'none',
+                    fontWeight: 700,
+                    borderColor: '#f7768e',
+                    color: '#f7768e',
+                    '&:hover': {
+                      borderColor: '#e05f78',
+                      bgcolor: 'rgba(247, 118, 142, 0.05)'
+                    },
+                    '&.Mui-disabled': {
+                      borderColor: 'rgba(255,255,255,0.05)',
+                      color: 'rgba(255,255,255,0.2)'
+                    }
+                  }}
+                >
+                  {resetLoading ? 'Resetting Layout...' : 'Reset To Auto Nest'}
+                </Button>
+                <Button
+                  variant="contained"
+                  onClick={handleRegenerateNest}
+                  disabled={regenerating}
+                  startIcon={regenerating ? <CircularProgress size={16} color="inherit" /> : <span>⚡</span>}
+                  sx={{
+                    flex: 1,
+                    textTransform: 'none',
+                    fontWeight: 700,
+                    bgcolor: '#bb9af7',
+                    color: '#0f1319',
+                    '&:hover': {
+                      bgcolor: '#a37bf2'
+                    },
+                    '&.Mui-disabled': {
+                      bgcolor: 'rgba(255,255,255,0.05)',
+                      color: 'rgba(255,255,255,0.2)'
+                    }
+                  }}
+                >
+                  {regenerating ? 'Re-Generating...' : 'Re-Generate Nest'}
+                </Button>
               </Box>
             </Paper>
           </Grid>

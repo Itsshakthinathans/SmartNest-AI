@@ -115,6 +115,25 @@ export const api = {
     const response = await apiClient.put(`/nesting/layout/${jobId}`, { parts });
     return response.data;
   },
+  resetLayout: async (jobId) => {
+    const response = await apiClient.post(`/nesting/reset/${jobId}`);
+    return response.data;
+  },
+  regenerateLayout: async (jobId) => {
+    const response = await apiClient.post(`/nesting/regenerate/${jobId}`);
+    return response.data;
+  },
+
+  // Export Center
+  exportPDF: async (jobId) => {
+    return apiClient.get(`/export/pdf/${jobId}`, { responseType: 'blob' });
+  },
+  exportSVG: async (jobId) => {
+    return apiClient.get(`/export/svg/${jobId}`, { responseType: 'blob' });
+  },
+  exportJSON: async (jobId) => {
+    return apiClient.get(`/export/json/${jobId}`, { responseType: 'blob' });
+  },
 };
 
 export default api;

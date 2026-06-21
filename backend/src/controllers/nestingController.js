@@ -3,7 +3,7 @@ const nestingService = require('../services/nestingService');
 const costingService = require('../services/costingService');
 
 // Helper to run nesting in the background
-const runNestingInBackground = async (jobId, files, projectId, optimizationLevel, sheetWidth, sheetHeight, remnantId) => {
+const runNestingInBackground = async (jobId, files, projectId, optimizationLevel, sheetWidth, sheetHeight, remnantId, isRegenerate = false) => {
   try {
     // Run the real nesting runner
     const result = await nestingService.runDeepnestNext(files, projectId, optimizationLevel, sheetWidth, sheetHeight);
@@ -18,13 +18,13 @@ const runNestingInBackground = async (jobId, files, projectId, optimizationLevel
     // Calculate costing metrics
     const cost = costingService.calculateCost(materialType, thickness, sheetWidth, sheetHeight, result.utilization);
 
-    // On success: save output file, utilization, placed_parts, costing and set status to completed
+    // On success: save output file, utilization, placed_parts, costing, layout_source and set status to completed
     const query = `
       UPDATE nest_jobs
       SET status = $1, utilization = $2, output_file = $3, placed_parts = $4,
           estimated_weight = $5, material_cost = $6, scrap_value = $7, total_estimated_cost = $8,
-          completed_at = CURRENT_TIMESTAMP
-      WHERE id = $9
+          completed_at = CURRENT_TIMESTAMP, layout_source = $9
+      WHERE id = $10
     `;
     await pool.query(query, [
       'completed',
@@ -35,8 +35,40 @@ const runNestingInBackground = async (jobId, files, projectId, optimizationLevel
       cost.materialCost,
       cost.scrapValue,
       cost.totalEstimatedCost,
+      isRegenerate ? 'REGENERATED AUTO NEST' : 'AUTO NEST',
       jobId
     ]);
+
+    // Copy to original layout
+    const fs = require('fs');
+    const path = require('path');
+    const jsonPath = path.join(__dirname, '../', result.outputJson);
+    const svgPath = path.join(__dirname, '../', result.outputSvg);
+
+    try {
+      if (fs.existsSync(jsonPath)) {
+        const layoutData = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+        layoutData.layout_source = isRegenerate ? 'REGENERATED AUTO NEST' : 'AUTO NEST';
+        fs.writeFileSync(jsonPath, JSON.stringify(layoutData, null, 2));
+      }
+    } catch (writeErr) {
+      console.error('[NestingController] Failed to write layout_source to JSON:', writeErr.message);
+    }
+
+    const origSvgPath = svgPath.replace('nested_output.svg', 'original_layout.svg');
+    const origJsonPath = jsonPath.replace('nested_output.json', 'original_layout.json');
+
+    try {
+      if (fs.existsSync(svgPath)) {
+        fs.copyFileSync(svgPath, origSvgPath);
+      }
+      if (fs.existsSync(jsonPath)) {
+        fs.copyFileSync(jsonPath, origJsonPath);
+      }
+      console.log(`[NestingController] Saved original layout references for Job ID ${jobId}`);
+    } catch (copyErr) {
+      console.error('[NestingController] Failed to copy original layout references:', copyErr.message);
+    }
 
     // Calculate remaining dimensions for remnants
     const remainingWidth = Math.max(0, Math.round(sheetWidth - (result.maxX || 0)));
@@ -121,11 +153,11 @@ const startNestingJob = async (req, res) => {
 
     // Create nest_jobs record with status = 'pending'
     const insertQuery = `
-      INSERT INTO nest_jobs (project_id, status, input_file_count, total_parts, sheet_width, sheet_height, remnant_id)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      INSERT INTO nest_jobs (project_id, status, input_file_count, total_parts, sheet_width, sheet_height, remnant_id, optimization_level)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       RETURNING id, status
     `;
-    const insertResult = await pool.query(insertQuery, [projectId, 'pending', fileCount, totalParts, sheetWidth, sheetHeight, remnantId]);
+    const insertResult = await pool.query(insertQuery, [projectId, 'pending', fileCount, totalParts, sheetWidth, sheetHeight, remnantId, optimizationLevel]);
     const jobId = insertResult.rows[0].id;
 
     // Update status = 'processing'
@@ -210,6 +242,7 @@ const getNestingResult = async (req, res) => {
         j.scrap_value,
         j.total_estimated_cost,
         j.remnant_id,
+        j.layout_source,
         p.material_type,
         p.material_thickness
       FROM nest_jobs j
@@ -256,7 +289,8 @@ const getNestingResult = async (req, res) => {
       usedArea: cost.usedArea,
       remainingArea: cost.wasteArea,
       estimatedRemnantValue: cost.scrapValue,
-      remnantId: job.remnant_id
+      remnantId: job.remnant_id,
+      layoutSource: job.layout_source || 'AUTO NEST'
     });
 
   } catch (err) {
@@ -350,6 +384,23 @@ const updateLayoutPlacements = async (req, res) => {
 
     await nestingService.updateLayoutFiles(jobId, filesResult.rows, parts);
 
+    // Write manual layout flag into JSON metadata
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const jsonPath = path.join(__dirname, '../', job.output_file.replace('.svg', '.json'));
+      if (fs.existsSync(jsonPath)) {
+        const layoutData = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+        layoutData.isManual = true;
+        fs.writeFileSync(jsonPath, JSON.stringify(layoutData, null, 2));
+      }
+    } catch (writeErr) {
+      console.error('[NestingController] Failed to mark layout as manual in JSON:', writeErr.message);
+    }
+
+    // Update layout_source to 'MANUAL EDIT' in the database
+    await pool.query('UPDATE nest_jobs SET layout_source = $1 WHERE id = $2', ['MANUAL EDIT', jobId]);
+
     return res.status(200).json({
       success: true,
       message: 'Layout coordinates adjusted successfully.'
@@ -365,10 +416,144 @@ const updateLayoutPlacements = async (req, res) => {
   }
 };
 
+// 6. Reset Layout
+const resetLayout = async (req, res) => {
+  const { jobId } = req.params;
+
+  try {
+    const jobRes = await pool.query('SELECT project_id, output_file FROM nest_jobs WHERE id = $1', [jobId]);
+    if (jobRes.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: `Nesting Job with ID ${jobId} not found`
+      });
+    }
+
+    const job = jobRes.rows[0];
+    if (!job.output_file) {
+      return res.status(400).json({
+        success: false,
+        message: 'No layout files exist for this job.'
+      });
+    }
+
+    const fs = require('fs');
+    const path = require('path');
+
+    const svgPath = path.join(__dirname, '../', job.output_file);
+    const jsonPath = path.join(__dirname, '../', job.output_file.replace('.svg', '.json'));
+
+    const origSvgPath = svgPath.replace('nested_output.svg', 'original_layout.svg');
+    const origJsonPath = jsonPath.replace('nested_output.json', 'original_layout.json');
+
+    if (!fs.existsSync(origSvgPath) || !fs.existsSync(origJsonPath)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Original layout files not found for restoration.'
+      });
+    }
+
+    // Copy original layout files back to current layout files
+    fs.copyFileSync(origSvgPath, svgPath);
+    fs.copyFileSync(origJsonPath, jsonPath);
+
+    // Read the original layout source from original_layout.json if stored, otherwise default to 'AUTO NEST'
+    let restoredSource = 'AUTO NEST';
+    try {
+      const origData = JSON.parse(fs.readFileSync(origJsonPath, 'utf8'));
+      if (origData.layout_source) {
+        restoredSource = origData.layout_source;
+      }
+    } catch (parseErr) {
+      console.error('[NestingController] Failed to parse original_layout.json for source:', parseErr.message);
+    }
+
+    // Update layout_source in DB
+    await pool.query('UPDATE nest_jobs SET layout_source = $1 WHERE id = $2', [restoredSource, jobId]);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Layout successfully restored to original auto nest.',
+      layoutSource: restoredSource
+    });
+
+  } catch (err) {
+    console.error('Error in resetLayout:', err.message);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal Server Error',
+      error: err.message
+    });
+  }
+};
+
+// 7. Regenerate Layout
+const regenerateLayout = async (req, res) => {
+  const { jobId } = req.params;
+
+  try {
+    const jobCheck = await pool.query(
+      'SELECT project_id, sheet_width, sheet_height, remnant_id, optimization_level FROM nest_jobs WHERE id = $1',
+      [jobId]
+    );
+
+    if (jobCheck.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: `Nesting Job with ID ${jobId} not found`
+      });
+    }
+
+    const job = jobCheck.rows[0];
+
+    const filesCheck = await pool.query('SELECT * FROM uploaded_files WHERE project_id = $1', [job.project_id]);
+    const files = filesCheck.rows;
+
+    if (files.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No files found for this project to nest.'
+      });
+    }
+
+    // Update status to 'processing'
+    await pool.query('UPDATE nest_jobs SET status = $1 WHERE id = $2', ['processing', jobId]);
+
+    // Trigger runNestingInBackground
+    runNestingInBackground(
+      jobId,
+      files,
+      job.project_id,
+      job.optimization_level || 'greedy',
+      job.sheet_width,
+      job.sheet_height,
+      job.remnant_id,
+      true // isRegenerate = true
+    );
+
+    return res.status(202).json({
+      success: true,
+      message: 'Re-nesting job started successfully.',
+      jobId,
+      status: 'processing'
+    });
+
+  } catch (err) {
+    console.error('Error in regenerateLayout:', err.message);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal Server Error',
+      error: err.message
+    });
+  }
+};
+
 module.exports = {
   startNestingJob,
   getJobStatus,
   getNestingResult,
   getLayoutPlacements,
-  updateLayoutPlacements
+  updateLayoutPlacements,
+  resetLayout,
+  regenerateLayout
 };
