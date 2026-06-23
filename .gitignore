@@ -53,3 +53,7 @@ backend/temp_*.svg
 # System generated agent artifacts
 artifacts/
 
+# Scratch scripts and temporary files
+backend/scratch_*.js
+backend/query_jobs.js
+

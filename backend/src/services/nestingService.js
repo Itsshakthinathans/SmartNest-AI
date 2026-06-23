@@ -614,7 +614,7 @@ function placeParts(sheets, parts, config, nestindex) {
 
     var sheetarea = Math.abs(GeometryUtil.polygonArea(sheet));
     totalsheetarea += sheetarea;
-    totalusablesheetarea += polygonMaterialArea(sheet);
+    totalusablesheetarea += Math.abs(GeometryUtil.polygonArea(sheet));
     fitness += sheetarea;
 
     for (let i = 0; i < parts.length; i++) {
@@ -824,7 +824,7 @@ function placeParts(sheets, parts, config, nestindex) {
     fitness += (minwidth / sheetarea) + minarea;
 
     for (let i = 0; i < placed.length; i++) {
-      totalplacedarea += polygonMaterialArea(placed[i]);
+      totalplacedarea += Math.abs(GeometryUtil.polygonArea(placed[i]));
       var idx = parts.indexOf(placed[i]);
       if (idx >= 0) parts.splice(idx, 1);
     }
