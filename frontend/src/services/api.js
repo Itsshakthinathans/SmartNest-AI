@@ -101,8 +101,11 @@ export const api = {
   },
 
   // AI Advisor
-  getAIRecommendations: async (jobId) => {
-    const response = await apiClient.get(`/ai/advisor/${jobId}`);
+  getAIRecommendations: async (jobId, enabled = true) => {
+    const response = await apiClient.get(`/ai/advisor/${jobId}`, {
+      params: { enabled },
+      headers: { 'x-ai-advisor-enabled': String(enabled) }
+    });
     return response.data;
   },
 
@@ -125,8 +128,8 @@ export const api = {
   },
 
   // Export Center
-  exportPDF: async (jobId) => {
-    return apiClient.get(`/export/pdf/${jobId}`, { responseType: 'blob' });
+  exportPDF: async (jobId, enabled = true) => {
+    return apiClient.get(`/export/pdf/${jobId}?advisor_enabled=${enabled}`, { responseType: 'blob' });
   },
   exportSVG: async (jobId) => {
     return apiClient.get(`/export/svg/${jobId}`, { responseType: 'blob' });

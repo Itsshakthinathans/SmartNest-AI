@@ -31,7 +31,7 @@ const formatArea = (areaSqMm) => {
 /**
  * Export Nesting Job Report as PDF
  */
-const exportPDF = async (jobId, res) => {
+const exportPDF = async (jobId, res, req = null, advisorEnabled = true) => {
   try {
     const query = `
       SELECT 
@@ -110,7 +110,7 @@ const exportPDF = async (jobId, res) => {
       } catch (e) {
         console.error('[ExportService] Error reading cached AI JSON:', e.message);
       }
-    } else {
+    } else if (advisorEnabled) {
       // Try to generate live
       try {
         const aiService = require('./aiService');

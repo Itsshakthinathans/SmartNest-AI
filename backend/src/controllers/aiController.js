@@ -3,6 +3,15 @@ const aiService = require('../services/aiService');
 
 const getAdvisorRecommendations = async (req, res) => {
   const { jobId } = req.params;
+  
+  const isEnabled = req.query.enabled !== 'false' && req.headers['x-ai-advisor-enabled'] !== 'false';
+  if (!isEnabled) {
+    return res.status(400).json({
+      success: false,
+      message: 'AI Manufacturing Advisor is currently disabled.'
+    });
+  }
+
   let jobData = null;
 
   try {

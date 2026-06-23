@@ -68,6 +68,10 @@ export default function Result() {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiData, setAiData] = useState(null);
   const [aiError, setAiError] = useState(null);
+  const [isAdvisorEnabled, setIsAdvisorEnabled] = useState(() => {
+    const saved = localStorage.getItem('smartnest_ai_advisor_enabled');
+    return saved === 'true';
+  });
 
   // Manual Nest Adjustment state
   const [isEditMode, setIsEditMode] = useState(false);
@@ -117,7 +121,7 @@ export default function Result() {
       let filename = `nest_layout_${jobId}.${format}`;
       
       if (format === 'pdf') {
-        response = await api.exportPDF(jobId);
+        response = await api.exportPDF(jobId, isAdvisorEnabled);
         filename = `SmartNest_Report_Job_${jobId}.pdf`;
       } else if (format === 'svg') {
         response = await api.exportSVG(jobId);
@@ -406,11 +410,16 @@ export default function Result() {
     }
   };
 
-  const fetchAIRecommendations = async (targetJobId = jobId) => {
+  const fetchAIRecommendations = async (targetJobId = jobId, overrideEnabled = null) => {
+    const enabled = overrideEnabled !== null ? overrideEnabled : isAdvisorEnabled;
+    if (!enabled) {
+      setAiError('AI Manufacturing Advisor is currently disabled.');
+      return;
+    }
     try {
       setAiLoading(true);
       setAiError(null);
-      const res = await api.getAIRecommendations(targetJobId);
+      const res = await api.getAIRecommendations(targetJobId, enabled);
       if (res.success && res.advisor) {
         setAiData(res.advisor);
       } else {
@@ -418,9 +427,18 @@ export default function Result() {
       }
     } catch (err) {
       console.error('Error fetching AI recommendations:', err);
-      setAiError('Unable to generate AI optimization suggestions.');
+      setAiError(err.response?.data?.message || 'Unable to generate AI optimization suggestions.');
     } finally {
       setAiLoading(false);
+    }
+  };
+
+  const handleAdvisorToggle = (checked) => {
+    setIsAdvisorEnabled(checked);
+    localStorage.setItem('smartnest_ai_advisor_enabled', String(checked));
+    if (!checked) {
+      setAiData(null);
+      setAiError(null);
     }
   };
 
@@ -568,8 +586,7 @@ export default function Result() {
         setSvgContent(svgRes.data);
       }
 
-      // Automatically fetch AI Advisor insights on load
-      fetchAIRecommendations(jobId);
+      // Do NOT automatically call Gemini on page load
 
       // Fetch layout placements for manual edits
       try {
@@ -940,14 +957,49 @@ export default function Result() {
                   }
                 }}
               >
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 2 }}>
-                  <AdvisorIcon sx={{ color: '#06b6d4' }} />
-                  <Typography variant="subtitle2" sx={{ color: '#ffffff', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                    AI Manufacturing Advisor
-                  </Typography>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, flexWrap: 'wrap', gap: 1 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                    <AdvisorIcon sx={{ color: '#06b6d4' }} />
+                    <Typography variant="subtitle2" sx={{ color: '#ffffff', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      AI Manufacturing Advisor
+                    </Typography>
+                  </Box>
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        id="ai-advisor-toggle"
+                        checked={isAdvisorEnabled}
+                        onChange={(e) => handleAdvisorToggle(e.target.checked)}
+                        sx={{
+                          '& .MuiSwitch-switchBase.Mui-checked': {
+                            color: '#10b981',
+                          },
+                          '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
+                            backgroundColor: '#10b981',
+                          },
+                        }}
+                      />
+                    }
+                    label={isAdvisorEnabled ? "🟢 AI Advisor Enabled" : "🔴 AI Advisor Disabled"}
+                    sx={{
+                      color: '#ffffff',
+                      m: 0,
+                      '& .MuiFormControlLabel-label': {
+                        fontSize: '0.85rem',
+                        fontWeight: 700,
+                        color: isAdvisorEnabled ? '#10b981' : '#f7768e',
+                      }
+                    }}
+                  />
                 </Box>
                 
-                {aiLoading ? (
+                {!isAdvisorEnabled ? (
+                  <Box sx={{ py: 2, textAlign: 'center' }}>
+                    <Typography variant="body2" sx={{ color: '#a9b1d6', fontStyle: 'italic' }}>
+                      AI Manufacturing Advisor is currently disabled.
+                    </Typography>
+                  </Box>
+                ) : aiLoading ? (
                   <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 4, gap: 1.5 }}>
                     <CircularProgress size={28} sx={{ color: '#06b6d4' }} />
                     <Typography variant="caption" sx={{ color: '#a9b1d6', fontStyle: 'italic' }}>
@@ -1005,12 +1057,19 @@ export default function Result() {
                 ) : (
                   <Box sx={{ py: 2, textAlign: 'center' }}>
                     <Button 
-                      variant="outlined" 
+                      id="generate-ai-analysis-btn"
+                      variant="contained" 
                       size="small" 
                       onClick={() => fetchAIRecommendations(jobId)}
-                      sx={{ color: '#0d9488', borderColor: '#0d9488', textTransform: 'none', fontWeight: 700 }}
+                      sx={{ 
+                        bgcolor: '#0d9488', 
+                        color: '#ffffff', 
+                        textTransform: 'none', 
+                        fontWeight: 700,
+                        '&:hover': { bgcolor: '#0f766e' }
+                      }}
                     >
-                      Request AI Recommendations
+                      Generate AI Analysis
                     </Button>
                   </Box>
                 )}

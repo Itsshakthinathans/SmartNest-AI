@@ -5,10 +5,11 @@ const exportService = require('../services/exportService');
  */
 const exportPDF = async (req, res) => {
   const { jobId } = req.params;
+  const advisorEnabled = req.query.advisor_enabled !== 'false';
   if (!jobId) {
     return res.status(400).json({ success: false, message: 'Nesting Job ID is required.' });
   }
-  return exportService.exportPDF(parseInt(jobId, 10), res);
+  return exportService.exportPDF(parseInt(jobId, 10), res, req, advisorEnabled);
 };
 
 /**

@@ -48,6 +48,7 @@ nested_output*.json
 ai-service/deepnest-next/nested_output*.svg
 ai-service/deepnest-next/nested_output*.json
 deepnest-engine/test.json
+backend/temp_*.svg
 
 # System generated agent artifacts
 artifacts/
