@@ -15,6 +15,12 @@ import {
   IconButton,
   TextField,
   Chip,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
 } from '@mui/material';
 import {
   ArrowBack as BackIcon,
@@ -1994,6 +2000,75 @@ export default function Result() {
                 </Button>
               </Box>
             </Paper>
+
+            {/* Active Layout Statistics Table */}
+            <TableContainer 
+              component={Paper} 
+              sx={{ 
+                mt: 3, 
+                bgcolor: '#0f1319', 
+                border: '1px solid rgba(255, 255, 255, 0.06)', 
+                borderRadius: '12px',
+                boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)'
+              }}
+            >
+              <Box sx={{ p: 3, pb: 0 }}>
+                <Typography variant="h6" sx={{ color: '#ffffff', fontWeight: 800 }}>
+                  Active Layout Metrics Details
+                </Typography>
+                <Typography variant="caption" sx={{ color: '#565f89', display: 'block', mt: 0.5 }}>
+                  Detailed comparison metrics for the selected strategy layout.
+                </Typography>
+              </Box>
+              <Table sx={{ minWidth: 300 }} aria-label="layout statistics table">
+                <TableHead>
+                  <TableRow sx={{ borderBottom: '1px solid rgba(255, 255, 255, 0.08)' }}>
+                    <TableCell sx={{ color: '#a9b1d6', fontWeight: 700, borderBottom: 'none' }}>Metric</TableCell>
+                    <TableCell align="right" sx={{ color: '#a9b1d6', fontWeight: 700, borderBottom: 'none' }}>Value</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {[
+                    { name: 'Used Area', value: formatArea(activeUsedArea) },
+                    { name: 'Remaining Area', value: formatArea(activeRemainingArea) },
+                    { name: 'Sheet Utilization', value: `${activeUtilization.toFixed(2)}%`, highlight: true, color: '#10b981' },
+                    { name: 'Material Weight', value: `${activeWeight.toFixed(2)} kg` },
+                    { name: 'Material Cost', value: formatCurrency(activeMaterialCost) },
+                    { name: 'Scrap Value', value: formatCurrency(activeScrapValue) },
+                    { name: 'Remnant Area', value: formatArea(activeRemnantArea) },
+                    { name: 'Remnant Value', value: formatCurrency(activeRemnantValue), highlight: true, color: '#10b981' },
+                    { name: 'Cutting Time', value: formatTime(activeCuttingTime) },
+                    { name: 'Runtime', value: formatRuntime(activeRuntime) },
+                    { name: 'Requested Parts', value: result?.totalParts !== undefined && result?.totalParts !== null ? result.totalParts : parsedPolygons.length },
+                    { name: 'Placed Parts', value: activePlacedParts },
+                    { name: 'Unplaced Parts', value: Math.max(0, (result?.totalParts !== undefined && result?.totalParts !== null ? result.totalParts : parsedPolygons.length) - activePlacedParts), highlight: true, color: '#f7768e' },
+                  ].map((row, index) => (
+                    <TableRow 
+                      key={row.name}
+                      sx={{ 
+                        borderBottom: index === 12 ? 'none' : '1px solid rgba(255, 255, 255, 0.04)',
+                        '&:hover': { bgcolor: 'rgba(255, 255, 255, 0.01)' }
+                      }}
+                    >
+                      <TableCell sx={{ color: '#a9b1d6', borderBottom: 'none', py: 1.5 }}>
+                        {row.name}
+                      </TableCell>
+                      <TableCell 
+                        align="right" 
+                        sx={{ 
+                          color: row.highlight ? row.color : '#ffffff', 
+                          fontWeight: 700, 
+                          borderBottom: 'none', 
+                          py: 1.5 
+                        }}
+                      >
+                        {row.value}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
           </Grid>
         </Grid>
       )}
