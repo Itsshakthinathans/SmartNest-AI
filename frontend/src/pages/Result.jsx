@@ -44,6 +44,22 @@ export default function Result() {
   const [status, setStatus] = useState('pending');
   const [result, setResult] = useState(null);
   const [svgContent, setSvgContent] = useState('');
+  const [selectedLayout, setSelectedLayout] = useState('layout1'); // 'layout1', 'layout2', 'layout3'
+
+  const formatTime = (seconds) => {
+    const s = parseFloat(seconds || 0);
+    if (s >= 60) {
+      const mins = Math.floor(s / 60);
+      const secs = Math.round(s % 60);
+      return `${mins}m ${secs}s`;
+    }
+    return `${s.toFixed(1)}s`;
+  };
+
+  const formatRuntime = (ms) => {
+    const seconds = (ms || 0) / 1000;
+    return `${seconds.toFixed(2)}s`;
+  };
 
   const formatCurrency = (val) => {
     return new Intl.NumberFormat('en-IN', {
@@ -124,11 +140,21 @@ export default function Result() {
         response = await api.exportPDF(jobId, isAdvisorEnabled);
         filename = `SmartNest_Report_Job_${jobId}.pdf`;
       } else if (format === 'svg') {
-        response = await api.exportSVG(jobId);
-        filename = `nested_output_job_${jobId}.svg`;
+        let activeSvgPath = result?.outputFile;
+        if (result?.nestingMode === 'multi' && result?.[selectedLayout]) {
+          activeSvgPath = result[selectedLayout].svgPath;
+        }
+        const fileUrl = `http://localhost:5000/${activeSvgPath}`;
+        response = await axios.get(fileUrl, { responseType: 'blob' });
+        filename = `nested_output_job_${jobId}_${selectedLayout}.svg`;
       } else if (format === 'json') {
-        response = await api.exportJSON(jobId);
-        filename = `nesting_layout_job_${jobId}.json`;
+        let activeJsonPath = result?.outputFile ? result.outputFile.replace('.svg', '.json') : null;
+        if (result?.nestingMode === 'multi' && result?.[selectedLayout]) {
+          activeJsonPath = result[selectedLayout].jsonPath;
+        }
+        const fileUrl = `http://localhost:5000/${activeJsonPath}`;
+        response = await axios.get(fileUrl, { responseType: 'blob' });
+        filename = `nesting_layout_job_${jobId}_${selectedLayout}.json`;
       }
 
       // Convert response blob to download link
@@ -528,7 +554,14 @@ export default function Result() {
         rotation: p.rotation
       }));
 
-      await api.updateLayoutPlacements(jobId, payloadParts);
+      let strategyQuery = '';
+      if (result?.nestingMode === 'multi') {
+        if (selectedLayout === 'layout1') strategyQuery = 'a';
+        else if (selectedLayout === 'layout2') strategyQuery = 'b';
+        else if (selectedLayout === 'layout3') strategyQuery = 'c';
+      }
+
+      await api.updateLayoutPlacements(jobId, payloadParts, strategyQuery);
       alert('Nesting layout coordinates saved successfully!');
       
       await fetchResult();
@@ -579,18 +612,41 @@ export default function Result() {
         setSheetWidth(resData.sheetWidth);
         setSheetHeight(resData.sheetHeight);
       }
-      
-      if (resData.outputFile) {
-        const fileUrl = `http://localhost:5000/${resData.outputFile}`;
-        const svgRes = await axios.get(fileUrl, { responseType: 'text' });
-        setSvgContent(svgRes.data);
+    } catch (err) {
+      console.error('Error fetching final result metrics:', err);
+      setError('Nesting completed, but failed to load the output layout file.');
+    }
+  };
+
+  useEffect(() => {
+    if (!result) return;
+    
+    let activeSvgPath = result.outputFile;
+    let strategyQuery = '';
+
+    if (result?.nestingMode === 'multi') {
+      const activeLayoutObj = result?.[selectedLayout];
+      if (activeLayoutObj) {
+        activeSvgPath = activeLayoutObj.svgPath;
+        if (selectedLayout === 'layout1') strategyQuery = 'a';
+        else if (selectedLayout === 'layout2') strategyQuery = 'b';
+        else if (selectedLayout === 'layout3') strategyQuery = 'c';
+      }
+    }
+
+    const loadLayoutData = async () => {
+      if (activeSvgPath) {
+        try {
+          const fileUrl = `http://localhost:5000/${activeSvgPath}`;
+          const svgRes = await axios.get(fileUrl, { responseType: 'text' });
+          setSvgContent(svgRes.data);
+        } catch (svgErr) {
+          console.error('Error fetching layout SVG:', svgErr);
+        }
       }
 
-      // Do NOT automatically call Gemini on page load
-
-      // Fetch layout placements for manual edits
       try {
-        const layoutRes = await api.getLayoutPlacements(jobId);
+        const layoutRes = await api.getLayoutPlacements(jobId, strategyQuery);
         if (layoutRes && layoutRes.parts) {
           const partsWithOrig = layoutRes.parts.map(p => ({
             ...p,
@@ -603,11 +659,10 @@ export default function Result() {
       } catch (layErr) {
         console.error('Error loading layout placements:', layErr);
       }
-    } catch (err) {
-      console.error('Error fetching final result metrics:', err);
-      setError('Nesting completed, but failed to load the output layout file.');
-    }
-  };
+    };
+
+    loadLayoutData();
+  }, [selectedLayout, result, jobId]);
 
   const getLoadingMessage = () => {
     if (elapsedSeconds < 2) return 'Reading CAD project file metadata...';
@@ -677,6 +732,84 @@ export default function Result() {
     );
   }
 
+  if (!result) {
+    return (
+      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '65vh', textAlign: 'center' }}>
+        <CircularProgress size={60} thickness={4} color="primary" sx={{ mb: 4 }} />
+        <Typography variant="h5" sx={{ fontWeight: 800, mb: 1, color: '#ffffff' }}>
+          Loading Nesting Results...
+        </Typography>
+      </Box>
+    );
+  }
+
+  const activeUtilization = parseFloat(
+    (result?.nestingMode === 'multi' && result[selectedLayout])
+      ? (result[selectedLayout]?.utilization ?? 0)
+      : (result?.utilization ?? 0)
+  );
+
+  const activeCuttingTime = parseFloat(
+    (result?.nestingMode === 'multi' && result[selectedLayout])
+      ? (result[selectedLayout]?.cuttingTime ?? 0)
+      : (result?.estimatedCuttingTime ?? 0)
+  );
+
+  const activeRemnantArea = parseFloat(
+    (result?.nestingMode === 'multi' && result[selectedLayout])
+      ? (result[selectedLayout]?.remnantArea ?? 0)
+      : (result?.remainingArea ?? 0)
+  );
+
+  const activeRemnantValue = parseFloat(
+    (result?.nestingMode === 'multi' && result[selectedLayout])
+      ? (result[selectedLayout]?.remnantValue ?? 0)
+      : (result?.estimatedRemnantValue ?? 0)
+  );
+
+  const activeMaterialCost = parseFloat(
+    (result?.nestingMode === 'multi' && result[selectedLayout])
+      ? (result[selectedLayout]?.materialCost ?? 0)
+      : (result?.materialCost ?? 0)
+  );
+
+  const activeWeight = parseFloat(
+    (result?.nestingMode === 'multi' && result[selectedLayout])
+      ? (result[selectedLayout]?.estimatedWeight ?? 0)
+      : (result?.estimatedWeight ?? 0)
+  );
+
+  const activePlacedParts = parseInt(
+    (result?.nestingMode === 'multi' && result[selectedLayout])
+      ? (result[selectedLayout]?.placedParts ?? 0)
+      : (result?.placedParts ?? 0),
+    10
+  );
+
+  const activeRuntime = parseFloat(
+    (result?.nestingMode === 'multi' && result[selectedLayout])
+      ? (result[selectedLayout]?.runtime ?? 0)
+      : (result?.optimizationRuntime ?? 0)
+  );
+
+  const activeUsedArea = result?.nestingMode === 'multi'
+    ? ((activeUtilization / 100) * (parseFloat(result?.sheetArea) || 0))
+    : parseFloat(result?.usedArea ?? 0);
+
+  const activeRemainingArea = result?.nestingMode === 'multi'
+    ? ((parseFloat(result?.sheetArea) || 0) - activeUsedArea)
+    : parseFloat(result?.remainingArea ?? 0);
+
+  const activeScrapValue = parseFloat(
+    (result?.nestingMode === 'multi' && result[selectedLayout])
+      ? (result[selectedLayout]?.remnantValue ?? 0)
+      : (result?.scrapValue ?? 0)
+  );
+
+  const activeTotalEstimatedCost = result?.nestingMode === 'multi'
+    ? (activeMaterialCost - activeScrapValue)
+    : parseFloat(result?.totalEstimatedCost ?? 0);
+
   return (
     <Box>
       <Box sx={{ mb: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
@@ -732,6 +865,62 @@ export default function Result() {
         </Alert>
       )}
 
+      {result?.nestingMode === 'multi' && result?.averageResponseTime !== null && (
+        <Box sx={{ mb: 3, p: 2.5, bgcolor: 'rgba(6, 182, 212, 0.1)', border: '1px solid rgba(6, 182, 212, 0.3)', borderRadius: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
+          <Typography variant="body1" sx={{ color: '#06b6d4', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 1 }}>
+            ⚡ Multi-Layout Mode Active
+          </Typography>
+          <Typography variant="body1" sx={{ color: '#ffffff', fontWeight: 800 }}>
+            Average Response Time: <span style={{ color: '#06b6d4' }}>{(result.averageResponseTime / 1000).toFixed(2)} seconds</span>
+          </Typography>
+        </Box>
+      )}
+
+      {result?.nestingMode === 'multi' && (
+        <Box sx={{ mb: 4, display: 'flex', flexDirection: 'column', gap: 2, bgcolor: '#0f1319', p: 2.5, borderRadius: '12px', border: '1px solid rgba(255,255,255,0.06)' }}>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
+            <Typography variant="subtitle1" sx={{ color: '#ffffff', fontWeight: 800 }}>
+              Select Nesting Layout Strategy:
+            </Typography>
+            {result?.[selectedLayout] && (
+              <Chip
+                label={`Runtime: ${(result?.[selectedLayout]?.runtime / 1000).toFixed(2)}s`}
+                sx={{ bgcolor: 'rgba(255, 255, 255, 0.05)', color: '#a9b1d6', border: '1px solid rgba(255,255,255,0.1)', fontWeight: 700 }}
+              />
+            )}
+          </Box>
+          <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+            {[
+              { id: 'layout1', label: 'Layout 1 (Compact Layout)', color: '#0d9488' },
+              { id: 'layout2', label: 'Layout 2 (Vertical Packing)', color: '#3b82f6' },
+              { id: 'layout3', label: 'Layout 3 (Horizontal Packing)', color: '#8b5cf6' }
+            ].map((layout) => (
+              <Button
+                key={layout.id}
+                variant={selectedLayout === layout.id ? 'contained' : 'outlined'}
+                onClick={() => setSelectedLayout(layout.id)}
+                sx={{
+                  flex: 1,
+                  minWidth: '200px',
+                  bgcolor: selectedLayout === layout.id ? layout.color : 'transparent',
+                  color: selectedLayout === layout.id ? '#ffffff' : '#a9b1d6',
+                  borderColor: selectedLayout === layout.id ? layout.color : 'rgba(255, 255, 255, 0.1)',
+                  fontWeight: 700,
+                  textTransform: 'none',
+                  py: 1.5,
+                  '&:hover': {
+                    bgcolor: selectedLayout === layout.id ? layout.color : 'rgba(255, 255, 255, 0.04)',
+                    borderColor: layout.color
+                  }
+                }}
+              >
+                {layout.label}
+              </Button>
+            ))}
+          </Box>
+        </Box>
+      )}
+
       {status === 'failed' ? (
         <Paper sx={{ p: 4, textAlign: 'center', bgcolor: '#0f1319', border: '1px solid #f7768e' }}>
           <Typography variant="h6" sx={{ color: '#f7768e', mb: 2 }}>
@@ -772,7 +961,7 @@ export default function Result() {
                   Sheet Utilization
                 </Typography>
                 <Typography variant="h2" sx={{ color: '#ffffff', fontWeight: 900, mb: 1 }}>
-                  {result?.utilization !== null ? `${result?.utilization.toFixed(2)}%` : '0%'}
+                  {activeUtilization !== null ? `${activeUtilization.toFixed(2)}%` : '0%'}
                 </Typography>
                 <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 500 }}>
                   Active material footprint placed on sheet layout
@@ -839,28 +1028,42 @@ export default function Result() {
                   <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
                     <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Used Area</Typography>
                     <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      {formatArea(result?.usedArea)}
+                      {formatArea(activeUsedArea)}
                     </Typography>
                   </Box>
                   <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
                   <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
                     <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Remaining Area</Typography>
                     <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      {formatArea(result?.remainingArea)}
+                      {formatArea(activeRemainingArea)}
                     </Typography>
                   </Box>
                   <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
                   <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
                     <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Est. Remnant Value</Typography>
                     <Typography variant="body2" sx={{ color: '#10b981', fontWeight: 700 }}>
-                      {formatCurrency(result?.estimatedRemnantValue)}
+                      {formatCurrency(activeRemnantValue)}
+                    </Typography>
+                  </Box>
+                  <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Est. Cutting Time</Typography>
+                    <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
+                      {formatTime(activeCuttingTime)}
+                    </Typography>
+                  </Box>
+                  <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Layout Gen. Runtime</Typography>
+                    <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
+                      {formatRuntime(activeRuntime)}
                     </Typography>
                   </Box>
                   <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
                   <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
                     <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Sheet Utilization</Typography>
                     <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      {result?.utilization !== null ? `${result?.utilization.toFixed(2)}%` : '0.00%'}
+                      {activeUtilization !== null ? `${activeUtilization.toFixed(2)}%` : '0.00%'}
                     </Typography>
                   </Box>
                   <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
@@ -874,7 +1077,7 @@ export default function Result() {
                   <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
                     <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Total Parts Placed</Typography>
                     <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      {result?.placedParts !== undefined && result?.placedParts !== null ? result.placedParts : parsedPolygons.length}
+                      {activePlacedParts !== undefined && activePlacedParts !== null ? activePlacedParts : parsedPolygons.length}
                     </Typography>
                   </Box>
                 </Box>
@@ -906,7 +1109,7 @@ export default function Result() {
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Estimated Weight</Typography>
                     <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      {result?.estimatedWeight !== undefined && result?.estimatedWeight !== null ? `${result.estimatedWeight.toFixed(2)} kg` : '0.00 kg'}
+                      {activeWeight !== undefined && activeWeight !== null ? `${activeWeight.toFixed(2)} kg` : '0.00 kg'}
                     </Typography>
                   </Box>
                   <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
@@ -914,7 +1117,7 @@ export default function Result() {
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Material Cost</Typography>
                     <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      ₹ {result?.materialCost !== undefined && result?.materialCost !== null ? result.materialCost.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
+                      ₹ {activeMaterialCost !== undefined && activeMaterialCost !== null ? activeMaterialCost.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
                     </Typography>
                   </Box>
                   <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
@@ -922,7 +1125,7 @@ export default function Result() {
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Scrap Value</Typography>
                     <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      ₹ {result?.scrapValue !== undefined && result?.scrapValue !== null ? result.scrapValue.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
+                      ₹ {activeScrapValue !== undefined && activeScrapValue !== null ? activeScrapValue.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
                     </Typography>
                   </Box>
                   <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
@@ -930,7 +1133,7 @@ export default function Result() {
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mt: 1 }}>
                     <Typography variant="body1" sx={{ color: '#ffffff', fontWeight: 800 }}>Total Cost</Typography>
                     <Typography variant="h5" sx={{ color: '#0d9488', fontWeight: 900 }}>
-                      ₹ {result?.totalEstimatedCost !== undefined && result?.totalEstimatedCost !== null ? result.totalEstimatedCost.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
+                      ₹ {activeTotalEstimatedCost !== undefined && activeTotalEstimatedCost !== null ? activeTotalEstimatedCost.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
                     </Typography>
                   </Box>
                 </Box>

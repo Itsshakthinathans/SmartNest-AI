@@ -77,8 +77,8 @@ export const api = {
   },
 
   // Nesting Jobs
-  startNestingJob: async (projectId, optimizationLevel = 'greedy', sheetWidth = 1000, sheetHeight = 1000, remnantId = null) => {
-    const response = await apiClient.post(`/nesting/start/${projectId}`, { optimizationLevel, sheetWidth, sheetHeight, remnantId });
+  startNestingJob: async (projectId, optimizationLevel = 'greedy', sheetWidth = 1000, sheetHeight = 1000, remnantId = null, nestingMode = 'multi') => {
+    const response = await apiClient.post(`/nesting/start/${projectId}`, { optimizationLevel, sheetWidth, sheetHeight, remnantId, nestingMode });
     return response.data;
   },
   getJobStatus: async (jobId) => {
@@ -110,12 +110,14 @@ export const api = {
   },
 
   // Manual Layout Adjustment
-  getLayoutPlacements: async (jobId) => {
-    const response = await apiClient.get(`/nesting/layout/${jobId}`);
+  getLayoutPlacements: async (jobId, strategy = '') => {
+    const response = await apiClient.get(`/nesting/layout/${jobId}`, {
+      params: strategy ? { strategy } : {}
+    });
     return response.data;
   },
-  updateLayoutPlacements: async (jobId, parts) => {
-    const response = await apiClient.put(`/nesting/layout/${jobId}`, { parts });
+  updateLayoutPlacements: async (jobId, parts, strategy = '') => {
+    const response = await apiClient.put(`/nesting/layout/${jobId}`, { parts, strategy });
     return response.data;
   },
   resetLayout: async (jobId) => {

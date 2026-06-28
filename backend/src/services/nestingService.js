@@ -4,6 +4,76 @@ const { DOMParser } = require('@xmldom/xmldom');
 const axios = require('axios');
 const FormData = require('form-data');
 
+function findLargestEmptyRectangle(sheetWidth, sheetHeight, obstacles) {
+  const xCoords = [0, sheetWidth];
+  const yCoords = [0, sheetHeight];
+  
+  const clippedObstacles = obstacles.map(o => {
+    return {
+      minX: Math.max(0, Math.min(sheetWidth, o.minX)),
+      maxX: Math.max(0, Math.min(sheetWidth, o.maxX)),
+      minY: Math.max(0, Math.min(sheetHeight, o.minY)),
+      maxY: Math.max(0, Math.min(sheetHeight, o.maxY))
+    };
+  }).filter(o => o.maxX > o.minX && o.maxY > o.minY);
+
+  clippedObstacles.forEach(o => {
+    if (o.minX > 0 && o.minX < sheetWidth) xCoords.push(o.minX);
+    if (o.maxX > 0 && o.maxX < sheetWidth) xCoords.push(o.maxX);
+    if (o.minY > 0 && o.minY < sheetHeight) yCoords.push(o.minY);
+    if (o.maxY > 0 && o.maxY < sheetHeight) yCoords.push(o.maxY);
+  });
+  
+  const xs = Array.from(new Set(xCoords)).sort((a, b) => a - b);
+  const ys = Array.from(new Set(yCoords)).sort((a, b) => a - b);
+  
+  let maxArea = 0;
+  let bestRect = { x1: 0, y1: 0, x2: 0, y2: 0 };
+  
+  for (let i = 0; i < xs.length; i++) {
+    for (let j = i + 1; j < xs.length; j++) {
+      const x1 = xs[i];
+      const x2 = xs[j];
+      const width = x2 - x1;
+      
+      const overlapping = clippedObstacles.filter(o => o.minX < x2 && o.maxX > x1);
+      
+      const yIntervals = overlapping.map(o => ({ min: o.minY, max: o.maxY }));
+      yIntervals.sort((a, b) => a.min - b.min);
+      
+      let currentY = 0;
+      for (const interval of yIntervals) {
+        if (interval.min > currentY) {
+          const height = interval.min - currentY;
+          const area = width * height;
+          if (area > maxArea) {
+            maxArea = area;
+            bestRect = { x1, y1: currentY, x2, y2: interval.min };
+          }
+        }
+        if (interval.max > currentY) {
+          currentY = interval.max;
+        }
+      }
+      
+      if (sheetHeight > currentY) {
+        const height = sheetHeight - currentY;
+        const area = width * height;
+        if (area > maxArea) {
+          maxArea = area;
+          bestRect = { x1, y1: currentY, x2, y2: sheetHeight };
+        }
+      }
+    }
+  }
+  
+  return {
+    width: Math.round(bestRect.x2 - bestRect.x1),
+    height: Math.round(bestRect.y2 - bestRect.y1),
+    area: Math.round(maxArea)
+  };
+}
+
 // ==========================================
 // 1. Headless Nesting Environment Setup
 // ==========================================
@@ -558,6 +628,17 @@ function hasMaterialOverlap(A, B, config) {
 }
 
 function hasMaterialOutsideSheet(part, sheet, config) {
+  // Strict bounding box containment check
+  const partBounds = GeometryUtil.getPolygonBounds(part);
+  const sheetBounds = GeometryUtil.getPolygonBounds(sheet);
+  const tolerance = 0.01;
+  if (partBounds.x < sheetBounds.x - tolerance ||
+      partBounds.y < sheetBounds.y - tolerance ||
+      (partBounds.x + partBounds.width) > (sheetBounds.x + sheetBounds.width + tolerance) ||
+      (partBounds.y + partBounds.height) > (sheetBounds.y + sheetBounds.height + tolerance)) {
+    return true;
+  }
+
   var clipperPart = outerPathToClipperCoordinates(part, config);
   var clipperSheet = outerPathToClipperCoordinates(sheet, config);
   var outside = new ClipperLib.Paths();
@@ -578,14 +659,17 @@ function hasMaterialOutsideSheet(part, sheet, config) {
 }
 
 function hasNonZeroClipperArea(paths) {
+  const scale = 10000000;
   for (let i = 0; i < paths.length; i++) {
-    if (Math.abs(ClipperLib.Clipper.Area(paths[i])) > 0) return true;
+    const area = Math.abs(ClipperLib.Clipper.Area(paths[i])) / (scale * scale);
+    if (area > 1.0) return true;
   }
   return false;
 }
 
 function placeParts(sheets, parts, config, nestindex) {
   if (!sheets) return null;
+  console.log(`[NestingService] placeParts executing. config.strategy: ${config ? config.strategy : 'undefined'}`);
   var totalnum = parts.length;
   var totalsheetarea = 0;
   var totalusablesheetarea = 0;
@@ -606,11 +690,19 @@ function placeParts(sheets, parts, config, nestindex) {
   var allplacements = [];
   var fitness = 0;
 
+  const originalSheets = [...sheets];
+
   while (parts.length > 0) {
     var placed = [];
     var placements = [];
     var sheet = sheets.shift();
-    if (!sheet) break;
+    if (!sheet) {
+      const template = originalSheets[0];
+      if (!template) break;
+      sheet = clonePolygonWithChildren(template);
+      sheet.source = 0;
+      sheet.id = allplacements.length;
+    }
 
     var sheetarea = Math.abs(GeometryUtil.polygonArea(sheet));
     totalsheetarea += sheetarea;
@@ -764,10 +856,33 @@ function placeParts(sheets, parts, config, nestindex) {
               { x: partbounds.x + partbounds.width + shiftvector.x, y: partbounds.y + partbounds.height + shiftvector.y },
               { x: partbounds.x + shiftvector.x, y: partbounds.y + partbounds.height + shiftvector.y }
             ]);
-            if (config.placementType == 'gravity') {
-              area = rectbounds.width * 5 + rectbounds.height;
+            
+            const sheetBounds = GeometryUtil.getPolygonBounds(sheet);
+            const currentSheetHeight = sheetBounds.height;
+            
+            if (config.strategy === 'b' || config.strategy === 'vertical') {
+              // Remnant Preservation: minimize max X. Break ties with bounding box height to keep it compact.
+              area = (rectbounds.x + rectbounds.width) * currentSheetHeight + rectbounds.height;
+            } else if (config.strategy === 'c' || config.strategy === 'horizontal') {
+              // Horizontal Packing: minimize max Y. Break ties with bounding box width to keep it compact.
+              const currentSheetWidth = sheetBounds.width;
+              area = (rectbounds.y + rectbounds.height) * currentSheetWidth + rectbounds.width;
             } else {
-              area = rectbounds.width * rectbounds.height;
+              // Strategy A (Max Utilization)
+              const boxArea = rectbounds.width * rectbounds.height;
+              const centroidX = allbounds.x + allbounds.width / 2;
+              const centroidY = allbounds.y + allbounds.height / 2;
+              const partCenterX = partbounds.x + partbounds.width / 2 + shiftvector.x;
+              const partCenterY = partbounds.y + partbounds.height / 2 + shiftvector.y;
+              const dx = partCenterX - centroidX;
+              const dy = partCenterY - centroidY;
+              const distToCentroid = Math.sqrt(dx * dx + dy * dy);
+              
+              if (config.placementType == 'gravity') {
+                area = rectbounds.width * 5 + rectbounds.height + 0.05 * distToCentroid;
+              } else {
+                area = boxArea + 0.05 * distToCentroid;
+              }
             }
           } else if (config.placementType == 'convexhull') {
             var partPoints = [];
@@ -821,7 +936,38 @@ function placeParts(sheets, parts, config, nestindex) {
       }
     }
 
-    fitness += (minwidth / sheetarea) + minarea;
+    let currentMaxX = 0;
+    let currentMaxY = 0;
+    let currentMinX = Infinity;
+    let currentMinY = Infinity;
+    for (let i = 0; i < placed.length; i++) {
+      const shifted = shiftPolygon(placed[i], placements[i]);
+      shifted.forEach(pt => {
+        if (pt.x > currentMaxX) currentMaxX = pt.x;
+        if (pt.x < currentMinX) currentMinX = pt.x;
+        if (pt.y > currentMaxY) currentMaxY = pt.y;
+        if (pt.y < currentMinY) currentMinY = pt.y;
+      });
+    }
+
+    const layoutWidth = placed.length > 0 ? (currentMaxX - currentMinX) : 0;
+    const layoutHeight = placed.length > 0 ? (currentMaxY - currentMinY) : 0;
+    const layoutArea = layoutWidth * layoutHeight;
+
+    const sheetBounds = GeometryUtil.getPolygonBounds(sheet);
+    const currentSheetWidth = sheetBounds.width;
+    const currentSheetHeight = sheetBounds.height;
+
+    if (config.strategy === 'b' || config.strategy === 'vertical') {
+      // Remnant Preservation: minimize maximum X coordinate to leave largest remnant
+      fitness += currentMaxX;
+    } else if (config.strategy === 'c' || config.strategy === 'horizontal') {
+      // Horizontal Packing: minimize maximum Y coordinate
+      fitness += currentMaxY;
+    } else {
+      // Maximum Utilization (Default)
+      fitness += layoutArea;
+    }
 
     for (let i = 0; i < placed.length; i++) {
       totalplacedarea += Math.abs(GeometryUtil.polygonArea(placed[i]));
@@ -1014,10 +1160,17 @@ function evaluateIndividual(sheets, individual, config) {
 // 4. runDeepnestNext Service Implementation
 // ==========================================
 
-const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', sheetWidth = 1000, sheetHeight = 1000) => {
+const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', sheetWidth = 1000, sheetHeight = 1000, strategy = 'single') => {
   prepareEnvironment();
+  if (global.db && global.db.cache) {
+    if (global.currentProjectId !== projectId) {
+      global.db.cache.clear();
+      global.currentProjectId = projectId;
+      console.log(`[NestingService] Cleared NFP cache for new Project ID: ${projectId}`);
+    }
+  }
 
-  console.log(`[NestingService] Starting deepnest-next runner for Project ID: ${projectId}. Processing ${files ? files.length : 0} files...`);
+  console.log(`[NestingService] Starting deepnest-next runner for Project ID: ${projectId}. Strategy: ${strategy}. Processing ${files ? files.length : 0} files...`);
 
   const partsToNest = [];
 
@@ -1038,29 +1191,54 @@ const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', s
         console.log(`[NestingService] Loading cached SVG for ${f.file_name} from: ${cachedSvgPath}`);
         svgString = fs.readFileSync(cachedSvgPath, 'utf8');
       } else {
-        console.log(`[NestingService] Converting DXF ${f.file_name} to SVG via conversion server...`);
-        const fileBuffer = fs.readFileSync(absolutePath);
-        const formData = new FormData();
-        formData.append('fileUpload', fileBuffer, {
-          filename: f.file_name,
-          contentType: 'application/dxf',
-        });
-        formData.append('format', 'svg');
-
-        const response = await axios.post('https://converter.deepnest.app/convert', formData.getBuffer(), {
-          headers: formData.getHeaders(),
-          responseType: 'text',
-          timeout: 20000
-        });
-
-        svgString = response.data;
-        if (svgString.substring(0, 5) === 'error' || (svgString.includes('"error"') && svgString.includes('"error_id"'))) {
-          throw new Error(`DXF Conversion Server returned error: ${svgString}`);
+        // Attempt local SVG cache fallback by matching original filename
+        let cacheFound = false;
+        try {
+          const { pool } = require('../config/database');
+          const matchRes = await pool.query(
+            'SELECT file_path FROM uploaded_files WHERE file_name = $1 AND file_path != $2 ORDER BY id DESC',
+            [f.file_name, f.file_path]
+          );
+          for (const row of matchRes.rows) {
+            const checkSvgPath = path.join(__dirname, '..', row.file_path + '.svg');
+            if (fs.existsSync(checkSvgPath)) {
+              console.log(`[NestingService] Found existing cached SVG for ${f.file_name} at ${checkSvgPath}. Copying...`);
+              fs.copyFileSync(checkSvgPath, cachedSvgPath);
+              cacheFound = true;
+              break;
+            }
+          }
+        } catch (cacheErr) {
+          console.error('[NestingService] Match SVG cache search error:', cacheErr.message);
         }
-        
-        // Cache the converted SVG
-        fs.writeFileSync(cachedSvgPath, svgString);
-        console.log(`[NestingService] Cached converted SVG at: ${cachedSvgPath}`);
+
+        if (cacheFound && fs.existsSync(cachedSvgPath)) {
+          svgString = fs.readFileSync(cachedSvgPath, 'utf8');
+        } else {
+          console.log(`[NestingService] Converting DXF ${f.file_name} to SVG via conversion server...`);
+          const fileBuffer = fs.readFileSync(absolutePath);
+          const formData = new FormData();
+          formData.append('fileUpload', fileBuffer, {
+            filename: f.file_name,
+            contentType: 'application/dxf',
+          });
+          formData.append('format', 'svg');
+
+          const response = await axios.post('https://converter.deepnest.app/convert', formData.getBuffer(), {
+            headers: formData.getHeaders(),
+            responseType: 'text',
+            timeout: 20000
+          });
+
+          svgString = response.data;
+          if (svgString.substring(0, 5) === 'error' || (svgString.includes('"error"') && svgString.includes('"error_id"'))) {
+            throw new Error(`DXF Conversion Server returned error: ${svgString}`);
+          }
+          
+          // Cache the converted SVG
+          fs.writeFileSync(cachedSvgPath, svgString);
+          console.log(`[NestingService] Cached converted SVG at: ${cachedSvgPath}`);
+        }
       }
     } else if (ext === '.svg') {
       svgString = fs.readFileSync(absolutePath, 'utf8');
@@ -1185,7 +1363,8 @@ const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', s
     placementType: "box",
     mergeLines: false,
     timeRatio: 0.5,
-    scale: 72
+    scale: 72,
+    strategy: strategy
   };
 
   let generations = 0;
@@ -1248,7 +1427,11 @@ const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', s
 
   let placedCount = 0;
   if (result.placements && result.placements.length > 0) {
-    placedCount = result.placements[0].sheetplacements.length;
+    result.placements.forEach(p => {
+      if (p.sheetplacements) {
+        placedCount += p.sheetplacements.length;
+      }
+    });
   }
 
   // Generate directory: src/uploads/projects/{projectId}/results
@@ -1257,13 +1440,16 @@ const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', s
     fs.mkdirSync(resultsDir, { recursive: true });
   }
 
-  const svgOutPath = path.join(resultsDir, 'nested_output.svg');
-  const jsonOutPath = path.join(resultsDir, 'nested_output.json');
+  const suffix = (strategy === 'a' || strategy === 'b' || strategy === 'c') ? `_strategy_${strategy}` : '';
+  const svgOutPath = path.join(resultsDir, `nested_output${suffix}.svg`);
+  const jsonOutPath = path.join(resultsDir, `nested_output${suffix}.json`);
 
   // Renders the visual SVG file
-  let svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="${sheetWidth + 100}" height="${sheetHeight + 100}" style="background:#1e1e24; padding:20px; border-radius:10px;">\n`;
-  svgContent += `  <rect x="10" y="10" width="${sheetWidth}" height="${sheetHeight}" fill="none" stroke="#565f89" stroke-width="2" stroke-dasharray="5,5" />\n`;
-  svgContent += `  <text x="20" y="30" fill="#a9b1d6" font-family="sans-serif" font-size="14">Sheet: ${sheetWidth} x ${sheetHeight} - Placed Parts: ${placedCount}/${partsToNest.length} - Utilization: ${result.utilisation.toFixed(2)}%</text>\n`;
+  const sheetSpacing = 50;
+  const numSheets = result.placements && result.placements.length > 0 ? result.placements.length : 1;
+  const totalSvgHeight = numSheets * sheetHeight + (numSheets - 1) * sheetSpacing + 100;
+
+  let svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="${sheetWidth + 100}" height="${totalSvgHeight}" style="background:#1e1e24; padding:20px; border-radius:10px;">\n`;
 
   const colors = [
     "#ff9e64", "#9ece6a", "#73daca", "#b4f9f8", 
@@ -1272,41 +1458,74 @@ const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', s
   
   let maxX = 0;
   let maxY = 0;
+  const obstacles = [];
   if (result.placements && result.placements.length > 0) {
-    result.placements[0].sheetplacements.forEach((placement, idx) => {
-      const origPart = partsToNest.find(p => p.id === placement.id);
-      if (origPart) {
-        placement.filename = origPart.filename;
-      }
-      
-      // Use original high-resolution points for rendering
-      const renderOuter = rotatePolygon(origPart.originalPoints || origPart, placement.rotation);
-      const shiftedOuter = shiftPolygon(renderOuter, placement);
-      
-      // Construct SVG path data using the outer boundary path
-      let pathD = `M ${shiftedOuter.map(p => `${p.x + 10} ${p.y + 10}`).join(' L ')} Z`;
-      
-      // Add nested hole loops
-      const originalChildren = origPart.originalChildren || origPart.children;
-      if (originalChildren && originalChildren.length > 0) {
-        originalChildren.forEach(child => {
-          const renderChild = rotatePolygon(child, placement.rotation);
-          const shiftedChild = shiftPolygon(renderChild, placement);
-          pathD += ` M ${shiftedChild.map(p => `${p.x + 10} ${p.y + 10}`).join(' L ')} Z`;
-        });
-      }
-      
-      const color = colors[idx % colors.length];
-      
-      shiftedOuter.forEach(pt => {
-        if (pt.x > maxX) maxX = pt.x;
-        if (pt.y > maxY) maxY = pt.y;
-      });
+    result.placements.forEach((sheetPlacement, sheetIdx) => {
+      const yOffset = sheetIdx * (sheetHeight + sheetSpacing);
 
-      svgContent += `  <path d="${pathD}" fill="${color}33" stroke="${color}" stroke-width="2" fill-rule="evenodd" />\n`;
-      svgContent += `  <text x="${placement.x + 20}" y="${placement.y + 30}" fill="#ffffff" font-family="sans-serif" font-size="10">Part ${placement.id}</text>\n`;
+      svgContent += `  <rect x="10" y="${yOffset + 10}" width="${sheetWidth}" height="${sheetHeight}" fill="none" stroke="#565f89" stroke-width="2" stroke-dasharray="5,5" />\n`;
+
+      let sheetPlacedArea = 0;
+      sheetPlacement.sheetplacements.forEach(p => {
+        const origPart = partsToNest.find(part => part.id === p.id);
+        if (origPart) sheetPlacedArea += polygonMaterialArea(origPart);
+      });
+      const sheetArea = sheetWidth * sheetHeight;
+      const sheetUtil = (sheetPlacedArea / sheetArea) * 100;
+
+      svgContent += `  <text x="20" y="${yOffset + 30}" fill="#a9b1d6" font-family="sans-serif" font-size="14">Sheet ${sheetIdx + 1}: ${sheetWidth} x ${sheetHeight} - Placed Parts: ${sheetPlacement.sheetplacements.length}/${partsToNest.length} - Utilization: ${sheetUtil.toFixed(2)}%</text>\n`;
+
+      sheetPlacement.sheetplacements.forEach((placement, idx) => {
+        const origPart = partsToNest.find(p => p.id === placement.id);
+        if (origPart) {
+          placement.filename = origPart.filename;
+        }
+        
+        const renderOuter = rotatePolygon(origPart.originalPoints || origPart, placement.rotation);
+        const drawingShift = { ...placement, y: placement.y + yOffset };
+        const shiftedOuter = shiftPolygon(renderOuter, drawingShift);
+        
+        if (sheetIdx === 0) {
+          let minPX = Infinity;
+          let maxPX = -Infinity;
+          let minPY = Infinity;
+          let maxPY = -Infinity;
+          const normalShiftedOuter = shiftPolygon(renderOuter, placement);
+          normalShiftedOuter.forEach(pt => {
+            if (pt.x < minPX) minPX = pt.x;
+            if (pt.x > maxPX) maxPX = pt.x;
+            if (pt.y < minPY) minPY = pt.y;
+            if (pt.y > maxPY) maxPY = pt.y;
+          });
+          obstacles.push({ minX: minPX, minY: minPY, maxX: maxPX, maxY: maxPY });
+        }
+
+        let pathD = `M ${shiftedOuter.map(p => `${p.x + 10} ${p.y + 10}`).join(' L ')} Z`;
+        
+        const originalChildren = origPart.originalChildren || origPart.children;
+        if (originalChildren && originalChildren.length > 0) {
+          originalChildren.forEach(child => {
+            const renderChild = rotatePolygon(child, placement.rotation);
+            const shiftedChild = shiftPolygon(renderChild, drawingShift);
+            pathD += ` M ${shiftedChild.map(p => `${p.x + 10} ${p.y + 10}`).join(' L ')} Z`;
+          });
+        }
+        
+        const color = colors[idx % colors.length];
+        
+        const localShiftedOuter = shiftPolygon(renderOuter, placement);
+        localShiftedOuter.forEach(pt => {
+          if (pt.x > maxX) maxX = pt.x;
+          if (pt.y > maxY) maxY = pt.y;
+        });
+
+        svgContent += `  <path d="${pathD}" fill="${color}33" stroke="${color}" stroke-width="2" fill-rule="evenodd" />\n`;
+        svgContent += `  <text x="${placement.x + 20}" y="${placement.y + yOffset + 30}" fill="#ffffff" font-family="sans-serif" font-size="10">Part ${placement.id}</text>\n`;
+      });
     });
   }
+
+  const remnant = findLargestEmptyRectangle(sheetWidth, sheetHeight, obstacles);
 
   svgContent += `</svg>`;
 
@@ -1315,17 +1534,77 @@ const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', s
 
   console.log(`[NestingService] Output files generated successfully at: ${resultsDir}`);
 
-  // Return relative paths to be stored in DB
-  const outputSvgRelativePath = `uploads/projects/${projectId}/results/nested_output.svg`;
-  const outputJsonRelativePath = `uploads/projects/${projectId}/results/nested_output.json`;
+  const outputSvgRelativePath = `uploads/projects/${projectId}/results/nested_output${suffix}.svg`;
+  const outputJsonRelativePath = `uploads/projects/${projectId}/results/nested_output${suffix}.json`;
+
+  let totalPerimeter = 0;
+  let contourCount = 0;
+  if (result.placements && result.placements.length > 0) {
+    result.placements.forEach(sheetPlacement => {
+      sheetPlacement.sheetplacements.forEach((placement) => {
+        const origPart = partsToNest.find(p => p.id === placement.id);
+        if (origPart) {
+          let outerPerim = 0;
+          for (let i = 0; i < origPart.length; i++) {
+            const p1 = origPart[i];
+            const p2 = origPart[(i + 1) % origPart.length];
+            const dx = p2.x - p1.x;
+            const dy = p2.y - p1.y;
+            outerPerim += Math.sqrt(dx * dx + dy * dy);
+          }
+          totalPerimeter += outerPerim;
+          contourCount += 1;
+
+          const children = origPart.originalChildren || origPart.children;
+          if (children && children.length > 0) {
+            children.forEach(child => {
+              let childPerim = 0;
+              for (let i = 0; i < child.length; i++) {
+                const p1 = child[i];
+                const p2 = child[(i + 1) % child.length];
+                const dx = p2.x - p1.x;
+                const dy = p2.y - p1.y;
+                childPerim += Math.sqrt(dx * dx + dy * dy);
+              }
+              totalPerimeter += childPerim;
+              contourCount += 1;
+            });
+          }
+        }
+      });
+    });
+  }
+
+  let materialType = 'Mild Steel';
+  let thickness = 1.0;
+  try {
+    const { pool } = require('../config/database');
+    const projRes = await pool.query('SELECT material_type, material_thickness FROM projects WHERE id = $1', [projectId]);
+    if (projRes.rows.length > 0) {
+      materialType = projRes.rows[0].material_type || 'Mild Steel';
+      thickness = parseFloat(projRes.rows[0].material_thickness) || 1.0;
+    }
+  } catch (err) {
+    console.error('[NestingService] Failed to load project material for cutting time:', err.message);
+  }
+
+  const cuttingTime = calculateRealisticCuttingTime(materialType, thickness, partsToNest, result.placements);
 
   return {
     utilization: parseFloat(result.utilisation.toFixed(2)),
     outputSvg: outputSvgRelativePath,
     outputJson: outputJsonRelativePath,
     partCount: placedCount,
+    generatedParts: partsToNest.length,
     maxX: Math.round(maxX),
-    maxY: Math.round(maxY)
+    maxY: Math.round(maxY),
+    largestRemnantWidth: remnant.width,
+    largestRemnantHeight: remnant.height,
+    largestRemnantArea: remnant.area,
+    totalPerimeter,
+    contourCount,
+    placements: result.placements,
+    estimatedCuttingTime: cuttingTime
   };
 };
 
@@ -1340,23 +1619,56 @@ const calculateFileArea = async (filePath, fileName) => {
   let svgString = '';
 
   if (ext === '.dxf') {
-    const fileBuffer = fs.readFileSync(filePath);
-    const formData = new FormData();
-    formData.append('fileUpload', fileBuffer, {
-      filename: fileName,
-      contentType: 'application/dxf',
-    });
-    formData.append('format', 'svg');
+    const cachedSvgPath = filePath + '.svg';
+    if (fs.existsSync(cachedSvgPath)) {
+      svgString = fs.readFileSync(cachedSvgPath, 'utf8');
+    } else {
+      // Attempt local SVG cache fallback by matching original filename
+      let cacheFound = false;
+      try {
+        const { pool } = require('../config/database');
+        const relativePath = path.relative(path.join(__dirname, '..'), filePath).replace(/\\/g, '/');
+        const matchRes = await pool.query(
+          'SELECT file_path FROM uploaded_files WHERE file_name = $1 AND file_path != $2 ORDER BY id DESC',
+          [fileName, relativePath]
+        );
+        for (const row of matchRes.rows) {
+          const checkSvgPath = path.join(__dirname, '..', row.file_path + '.svg');
+          if (fs.existsSync(checkSvgPath)) {
+            console.log(`[NestingService] Found existing cached SVG for ${fileName} at ${checkSvgPath}. Copying...`);
+            fs.copyFileSync(checkSvgPath, cachedSvgPath);
+            cacheFound = true;
+            break;
+          }
+        }
+      } catch (cacheErr) {
+        console.error('[NestingService] Match SVG cache search error:', cacheErr.message);
+      }
 
-    const response = await axios.post('https://converter.deepnest.app/convert', formData.getBuffer(), {
-      headers: formData.getHeaders(),
-      responseType: 'text',
-      timeout: 20000
-    });
+      if (cacheFound && fs.existsSync(cachedSvgPath)) {
+        svgString = fs.readFileSync(cachedSvgPath, 'utf8');
+      } else {
+        const fileBuffer = fs.readFileSync(filePath);
+        const formData = new FormData();
+        formData.append('fileUpload', fileBuffer, {
+          filename: fileName,
+          contentType: 'application/dxf',
+        });
+        formData.append('format', 'svg');
 
-    svgString = response.data;
-    if (svgString.substring(0, 5) === 'error' || (svgString.includes('"error"') && svgString.includes('"error_id"'))) {
-      throw new Error(`DXF Conversion Server returned error: ${svgString}`);
+        const response = await axios.post('https://converter.deepnest.app/convert', formData.getBuffer(), {
+          headers: formData.getHeaders(),
+          responseType: 'text',
+          timeout: 20000
+        });
+
+        svgString = response.data;
+        if (svgString.substring(0, 5) === 'error' || (svgString.includes('"error"') && svgString.includes('"error_id"'))) {
+          throw new Error(`DXF Conversion Server returned error: ${svgString}`);
+        }
+        // Cache the converted SVG
+        fs.writeFileSync(cachedSvgPath, svgString);
+      }
     }
   } else if (ext === '.svg') {
     svgString = fs.readFileSync(filePath, 'utf8');
@@ -1407,7 +1719,7 @@ const calculateFileArea = async (filePath, fileName) => {
   return parseFloat(fileArea.toFixed(2));
 };
 
-const updateLayoutFiles = async (jobId, projectFiles, placements) => {
+const updateLayoutFiles = async (jobId, projectFiles, placements, strategy = null) => {
   // 1. Fetch the job details
   const { pool } = require('../config/database');
   const jobRes = await pool.query('SELECT * FROM nest_jobs WHERE id = $1', [jobId]);
@@ -1431,21 +1743,46 @@ const updateLayoutFiles = async (jobId, projectFiles, placements) => {
       if (fs.existsSync(cachedSvgPath)) {
         svgString = fs.readFileSync(cachedSvgPath, 'utf8');
       } else {
-        // Fallback to converter
-        const fileBuffer = fs.readFileSync(absolutePath);
-        const formData = new FormData();
-        formData.append('fileUpload', fileBuffer, {
-          filename: f.file_name,
-          contentType: 'application/dxf',
-        });
-        formData.append('format', 'svg');
-        const response = await axios.post('https://converter.deepnest.app/convert', formData.getBuffer(), {
-          headers: formData.getHeaders(),
-          responseType: 'text',
-          timeout: 20000
-        });
-        svgString = response.data;
-        fs.writeFileSync(cachedSvgPath, svgString);
+        // Attempt local SVG cache fallback by matching original filename
+        let cacheFound = false;
+        try {
+          const { pool } = require('../config/database');
+          const matchRes = await pool.query(
+            'SELECT file_path FROM uploaded_files WHERE file_name = $1 AND file_path != $2 ORDER BY id DESC',
+            [f.file_name, f.file_path]
+          );
+          for (const row of matchRes.rows) {
+            const checkSvgPath = path.join(__dirname, '..', row.file_path + '.svg');
+            if (fs.existsSync(checkSvgPath)) {
+              console.log(`[NestingService] Found existing cached SVG for ${f.file_name} at ${checkSvgPath}. Copying...`);
+              fs.copyFileSync(checkSvgPath, cachedSvgPath);
+              cacheFound = true;
+              break;
+            }
+          }
+        } catch (cacheErr) {
+          console.error('[NestingService] Match SVG cache search error:', cacheErr.message);
+        }
+
+        if (cacheFound && fs.existsSync(cachedSvgPath)) {
+          svgString = fs.readFileSync(cachedSvgPath, 'utf8');
+        } else {
+          // Fallback to converter
+          const fileBuffer = fs.readFileSync(absolutePath);
+          const formData = new FormData();
+          formData.append('fileUpload', fileBuffer, {
+            filename: f.file_name,
+            contentType: 'application/dxf',
+          });
+          formData.append('format', 'svg');
+          const response = await axios.post('https://converter.deepnest.app/convert', formData.getBuffer(), {
+            headers: formData.getHeaders(),
+            responseType: 'text',
+            timeout: 20000
+          });
+          svgString = response.data;
+          fs.writeFileSync(cachedSvgPath, svgString);
+        }
       }
     } else {
       svgString = fs.readFileSync(absolutePath, 'utf8');
@@ -1543,6 +1880,7 @@ const updateLayoutFiles = async (jobId, projectFiles, placements) => {
     "#2ac3de", "#7aa2f7", "#bb9af7", "#f7768e"
   ];
 
+  const obstacles = [];
   sheetplacements.forEach((placement, idx) => {
     const origPart = partsToNest.find(p => p.id === placement.id);
     if (!origPart) return;
@@ -1550,6 +1888,18 @@ const updateLayoutFiles = async (jobId, projectFiles, placements) => {
     const renderOuter = rotatePolygon(origPart.originalPoints || origPart, placement.rotation);
     const shiftedOuter = shiftPolygon(renderOuter, placement);
     
+    let minPX = Infinity;
+    let maxPX = -Infinity;
+    let minPY = Infinity;
+    let maxPY = -Infinity;
+    shiftedOuter.forEach(pt => {
+      if (pt.x < minPX) minPX = pt.x;
+      if (pt.x > maxPX) maxPX = pt.x;
+      if (pt.y < minPY) minPY = pt.y;
+      if (pt.y > maxPY) maxPY = pt.y;
+    });
+    obstacles.push({ minX: minPX, minY: minPY, maxX: maxPX, maxY: maxPY });
+
     let pathD = `M ${shiftedOuter.map(p => `${p.x + 10} ${p.y + 10}`).join(' L ')} Z`;
     
     const originalChildren = origPart.originalChildren || origPart.children;
@@ -1573,19 +1923,182 @@ const updateLayoutFiles = async (jobId, projectFiles, placements) => {
 
   svgContent += `</svg>`;
 
+  const remnant = findLargestEmptyRectangle(sheetWidth, sheetHeight, obstacles);
+
   // Write new SVG and JSON files
   const resultsDir = path.join(__dirname, '../uploads/projects', String(projectId), 'results');
-  const svgOutPath = path.join(resultsDir, 'nested_output.svg');
-  const jsonOutPath = path.join(resultsDir, 'nested_output.json');
+  const suffix = (strategy === 'a' || strategy === 'b' || strategy === 'c') ? `_strategy_${strategy}` : '';
+  const svgOutPath = path.join(resultsDir, `nested_output${suffix}.svg`);
+  const jsonOutPath = path.join(resultsDir, `nested_output${suffix}.json`);
 
   fs.writeFileSync(svgOutPath, svgContent);
   fs.writeFileSync(jsonOutPath, JSON.stringify(result, null, 2));
 
-  console.log(`[NestingService] Layout files updated for Job ID ${jobId}.`);
+  console.log(`[NestingService] Layout files updated for Job ID ${jobId} (Strategy: ${strategy || 'active'}).`);
+  return { 
+    maxX: Math.round(maxX), 
+    maxY: Math.round(maxY),
+    largestRemnantWidth: remnant.width,
+    largestRemnantHeight: remnant.height,
+    largestRemnantArea: remnant.area
+  };
 };
+
+function calculateRealisticCuttingTime(materialType, thickness, partsToNest, placements) {
+  const baseSpeeds = {
+    'Mild Steel': 50,
+    'Stainless Steel': 45,
+    'Stainless Steel 304': 45,
+    'Aluminium': 60,
+    'Copper': 25,
+    'Brass': 30
+  };
+  const name = String(materialType || 'Mild Steel').trim();
+  const matchedKey = Object.keys(baseSpeeds).find(
+    k => k.toLowerCase() === name.toLowerCase()
+  );
+  const baseSpeed = matchedKey ? baseSpeeds[matchedKey] : 50;
+  const speed = Math.max(2, baseSpeed / Math.max(0.5, thickness || 1.0));
+
+  let totalTime = 0;
+
+  if (!placements || placements.length === 0) {
+    return 0;
+  }
+
+  placements.forEach(sheetPlacement => {
+    let currentX = 0;
+    let currentY = 0;
+    let totalTraverseDistance = 0;
+    let totalCutDistance = 0;
+    let totalPierceCount = 0;
+
+    const placedPartsList = [];
+    sheetPlacement.sheetplacements.forEach(p => {
+      const origPart = partsToNest.find(part => part.id === p.id);
+      if (!origPart) return;
+
+      const outerRotated = rotatePolygon(origPart.originalPoints || origPart, p.rotation);
+      const outerShifted = shiftPolygon(outerRotated, p);
+
+      const originalChildren = origPart.originalChildren || origPart.children || [];
+      const holesShifted = originalChildren.map(child => {
+        const childRotated = rotatePolygon(child, p.rotation);
+        return shiftPolygon(childRotated, p);
+      });
+
+      let sumX = 0, sumY = 0;
+      outerShifted.forEach(pt => {
+        sumX += pt.x;
+        sumY += pt.y;
+      });
+      const centroid = {
+        x: sumX / (outerShifted.length || 1),
+        y: sumY / (outerShifted.length || 1)
+      };
+
+      placedPartsList.push({
+        id: p.id,
+        outer: outerShifted,
+        holes: holesShifted,
+        centroid: centroid
+      });
+    });
+
+    const unvisited = [...placedPartsList];
+    while (unvisited.length > 0) {
+      let closestIdx = -1;
+      let minDistance = Infinity;
+      for (let i = 0; i < unvisited.length; i++) {
+        const part = unvisited[i];
+        const dx = part.centroid.x - currentX;
+        const dy = part.centroid.y - currentY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < minDistance) {
+          minDistance = dist;
+          closestIdx = i;
+        }
+      }
+
+      if (closestIdx === -1) break;
+      const part = unvisited.splice(closestIdx, 1)[0];
+
+      const unvisitedHoles = [...part.holes];
+      while (unvisitedHoles.length > 0) {
+        let closestHoleIdx = -1;
+        let minHoleDistance = Infinity;
+        for (let i = 0; i < unvisitedHoles.length; i++) {
+          const hole = unvisitedHoles[i];
+          if (hole.length === 0) continue;
+          const dx = hole[0].x - currentX;
+          const dy = hole[0].y - currentY;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < minHoleDistance) {
+            minHoleDistance = dist;
+            closestHoleIdx = i;
+          }
+        }
+
+        if (closestHoleIdx === -1) break;
+        const hole = unvisitedHoles.splice(closestHoleIdx, 1)[0];
+        
+        const dx = hole[0].x - currentX;
+        const dy = hole[0].y - currentY;
+        totalTraverseDistance += Math.sqrt(dx * dx + dy * dy);
+        
+        let holePerimeter = 0;
+        for (let j = 0; j < hole.length; j++) {
+          const p1 = hole[j];
+          const p2 = hole[(j + 1) % hole.length];
+          const hdx = p2.x - p1.x;
+          const hdy = p2.y - p1.y;
+          holePerimeter += Math.sqrt(hdx * hdx + hdy * hdy);
+        }
+        totalCutDistance += holePerimeter;
+        totalPierceCount += 1;
+        
+        currentX = hole[0].x;
+        currentY = hole[0].y;
+      }
+
+      if (part.outer.length > 0) {
+        const dx = part.outer[0].x - currentX;
+        const dy = part.outer[0].y - currentY;
+        totalTraverseDistance += Math.sqrt(dx * dx + dy * dy);
+
+        let outerPerimeter = 0;
+        for (let j = 0; j < part.outer.length; j++) {
+          const p1 = part.outer[j];
+          const p2 = part.outer[(j + 1) % part.outer.length];
+          const odx = p2.x - p1.x;
+          const ody = p2.y - p1.y;
+          outerPerimeter += Math.sqrt(odx * odx + ody * ody);
+        }
+        totalCutDistance += outerPerimeter;
+        totalPierceCount += 1;
+
+        currentX = part.outer[0].x;
+        currentY = part.outer[0].y;
+      }
+    }
+
+    const dx = 0 - currentX;
+    const dy = 0 - currentY;
+    totalTraverseDistance += Math.sqrt(dx * dx + dy * dy);
+
+    const cutTime = totalCutDistance / speed;
+    const pierceTime = totalPierceCount * 1.0;
+    const traverseTime = totalTraverseDistance / 100;
+
+    totalTime += (cutTime + pierceTime + traverseTime);
+  });
+
+  return parseFloat(totalTime.toFixed(2));
+}
 
 module.exports = {
   runDeepnestNext,
   calculateFileArea,
-  updateLayoutFiles
+  updateLayoutFiles,
+  calculateRealisticCuttingTime
 };
