@@ -823,7 +823,7 @@ export default function Result() {
         rotation: p.rotation,
         partId: p.partId ? parseInt(p.partId, 10) : null,
         sheetId: p.sheetId ? parseInt(p.sheetId, 10) : 0,
-        source: p.source || 'deepnest'
+        source: p.source === 'manual' ? 'manual' : 'deepnest'
       }));
 
       let strategyQuery = '';
@@ -958,7 +958,7 @@ export default function Result() {
             return {
               ...p,
               partId,
-              source: p.source || 'deepnest',
+              source: p.source === 'manual' ? 'manual' : 'deepnest',
               sheetId: p.sheetId || 0,
               originalX: p.x,
               originalY: p.y,

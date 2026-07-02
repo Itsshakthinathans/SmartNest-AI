@@ -1861,7 +1861,7 @@ const updateLayoutFiles = async (jobId, projectFiles, placements, strategy = nul
       filename: p.filename,
       partId: p.partId ? parseInt(p.partId, 10) : null,
       sheetId: p.sheetId ? parseInt(p.sheetId, 10) : 0,
-      source: p.source || 'deepnest'
+      source: p.source === 'manual' ? 'manual' : 'deepnest'
     });
   });
 

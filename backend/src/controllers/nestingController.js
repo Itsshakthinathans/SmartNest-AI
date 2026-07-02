@@ -593,7 +593,7 @@ const getLayoutPlacements = async (req, res) => {
       rotation: p.rotation,
       partId: p.partId || null,
       sheetId: p.sheetId || 0,
-      source: p.source || 'deepnest'
+      source: p.source === 'manual' ? 'manual' : 'deepnest'
     }));
 
     return res.status(200).json({ parts });
