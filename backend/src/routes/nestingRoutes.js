@@ -23,4 +23,7 @@ router.post('/reset/:jobId', nestingController.resetLayout);
 // 7. Regenerate Layout
 router.post('/regenerate/:jobId', nestingController.regenerateLayout);
 
+// 8. Validate Layout Placement
+router.post('/layout/validate/:jobId', nestingController.validateLayoutPlacement);
+
 module.exports = router;

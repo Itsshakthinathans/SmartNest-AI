@@ -40,6 +40,94 @@ import {
   Person as UserIcon,
 } from '@mui/icons-material';
 import api from '../services/api';
+import PartsLibrary from '../components/PartsLibrary';
+import LayoutCanvas from '../components/LayoutCanvas';
+import Toolbar from '../components/Toolbar';
+import Statistics from '../components/Statistics';
+
+const getCentroid = (geometry) => {
+  if (!geometry || geometry.length === 0) return { x: 0, y: 0 };
+  let sumX = 0, sumY = 0;
+  geometry.forEach(pt => {
+    sumX += pt.x;
+    sumY += pt.y;
+  });
+  return {
+    x: sumX / geometry.length,
+    y: sumY / geometry.length
+  };
+};
+
+const getPathData = (geometry, holes = []) => {
+  if (!geometry || geometry.length === 0) return '';
+  let d = `M ${geometry.map(pt => `${pt.x} ${pt.y}`).join(' L ')} Z`;
+  if (holes && holes.length > 0) {
+    holes.forEach(hole => {
+      d += ` M ${hole.map(pt => `${pt.x} ${pt.y}`).join(' L ')} Z`;
+    });
+  }
+  return d;
+};
+
+const parseSinglePartSvg = (svgText) => {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(svgText, 'image/svg+xml');
+  const paths = Array.from(doc.querySelectorAll('path'));
+  
+  let outerPoints = [];
+  const holes = [];
+  
+  paths.forEach((path, idx) => {
+    const dStr = path.getAttribute('d') || '';
+    const coords = dStr.match(/[-+]?[0-9]*\.?[0-9]+/g);
+    const points = [];
+    if (coords) {
+      for (let i = 0; i < coords.length; i += 2) {
+        const x = parseFloat(coords[i]);
+        const y = parseFloat(coords[i+1]);
+        if (!isNaN(x) && !isNaN(y)) {
+          points.push({ x, y });
+        }
+      }
+    }
+    if (points.length > 0) {
+      if (idx === 0) {
+        outerPoints = points;
+      } else {
+        holes.push(points);
+      }
+    }
+  });
+  
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  let sumX = 0, sumY = 0;
+  outerPoints.forEach(pt => {
+    if (pt.x < minX) minX = pt.x;
+    if (pt.x > maxX) maxX = pt.x;
+    if (pt.y < minY) minY = pt.y;
+    if (pt.y > maxY) maxY = pt.y;
+    sumX += pt.x;
+    sumY += pt.y;
+  });
+  
+  const centroid = {
+    x: sumX / outerPoints.length,
+    y: sumY / outerPoints.length
+  };
+  
+  return {
+    geometry: outerPoints,
+    holes,
+    centroid,
+    boundingBox: {
+      x: minX,
+      y: minY,
+      width: maxX - minX,
+      height: maxY - minY
+    }
+  };
+};
+
 
 export default function Result() {
   const { jobId } = useParams();
@@ -103,6 +191,46 @@ export default function Result() {
   const [draggingPartId, setDraggingPartId] = useState(null);
   const [dragStartMouse, setDragStartMouse] = useState({ x: 0, y: 0 });
   const [dragStartPartPos, setDragStartPartPos] = useState({ x: 0, y: 0 });
+  const [isDirty, setIsDirty] = useState(false);
+
+  // Library and History states
+  const [projectFiles, setProjectFiles] = useState([]);
+  const [selectedLibraryPart, setSelectedLibraryPart] = useState(null);
+  const [past, setPast] = useState([]);
+  const [future, setFuture] = useState([]);
+  const [localPartsBeforeDrag, setLocalPartsBeforeDrag] = useState([]);
+
+  // Keyboard controls listener
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        if (selectedLibraryPart) {
+          setSelectedLibraryPart(null);
+        }
+      }
+      if (e.key === 'r' || e.key === 'R') {
+        if (selectedLibraryPart) {
+          setSelectedLibraryPart(prev => {
+            if (!prev) return null;
+            return {
+              ...prev,
+              rotation: ((prev.rotation || 0) + 90) % 360
+            };
+          });
+        }
+      }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) {
+          return;
+        }
+        if (selectedPartId !== null) {
+          handleDeletePart(selectedPartId);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedLibraryPart, selectedPartId, localParts]);
 
   // Preview options
   const [showLabels, setShowLabels] = useState(false);
@@ -202,6 +330,8 @@ export default function Result() {
       setExportLoading(prev => ({ ...prev, [format]: false }));
     }
   };
+
+  const handleExportLayout = handleExport;
 
   // Monitor elapsed time
   useEffect(() => {
@@ -476,10 +606,7 @@ export default function Result() {
 
   const handlePartMouseDown = (e, partId) => {
     if (!isEditMode) return;
-    
-    // Stop propagation so canvas drag doesn't trigger
     e.stopPropagation();
-    
     setSelectedPartId(partId);
     setDraggingPartId(partId);
     setDragStartMouse({ x: e.clientX, y: e.clientY });
@@ -487,10 +614,14 @@ export default function Result() {
     const part = localParts.find(p => p.id === partId);
     if (part) {
       setDragStartPartPos({ x: part.x, y: part.y });
+      setLocalPartsBeforeDrag(localParts);
     }
   };
 
   const handleTranslatePart = (partId, dx, dy) => {
+    setPast(prev => [...prev, localParts]);
+    setFuture([]);
+    setIsDirty(true);
     setLocalParts(prevParts => prevParts.map(p => {
       if (p.id === partId) {
         return {
@@ -507,12 +638,17 @@ export default function Result() {
     const part = localParts.find(p => p.id === partId);
     if (!part) return;
 
+    setPast(prev => [...prev, localParts]);
+    setFuture([]);
+    setIsDirty(true);
+
     const poly = parsedPolygons.find(py => py.id === partId);
     if (!poly) {
+      // For manually placed parts, rotate around its centroid
+      let nextRot = (part.rotation + deltaDegrees) % 360;
+      if (nextRot < 0) nextRot += 360;
       setLocalParts(prevParts => prevParts.map(p => {
         if (p.id === partId) {
-          let nextRot = (p.rotation + deltaDegrees) % 360;
-          if (nextRot < 0) nextRot += 360;
           return { ...p, rotation: nextRot };
         }
         return p;
@@ -549,6 +685,133 @@ export default function Result() {
     }));
   };
 
+  const handleSelectLibraryPart = async (part) => {
+    if (selectedLibraryPart && selectedLibraryPart.id === part.id) {
+      setSelectedLibraryPart(null);
+      return;
+    }
+    
+    try {
+      const url = `http://localhost:5000/${part.file_path}.svg`;
+      const res = await axios.get(url, { responseType: 'text' });
+      const parsedGeometry = parseSinglePartSvg(res.data);
+      setSelectedLibraryPart({
+        ...part,
+        geometry: parsedGeometry.geometry,
+        holes: parsedGeometry.holes,
+        centroid: parsedGeometry.centroid,
+        boundingBox: parsedGeometry.boundingBox,
+        rotation: 0
+      });
+    } catch (err) {
+      console.error('Failed to load library part geometry:', err);
+      alert('Error loading part geometry details.');
+    }
+  };
+
+  const handleRotateSelectedLibraryPart = (delta) => {
+    setSelectedLibraryPart(prev => {
+      if (!prev) return null;
+      let nextRot = ((prev.rotation || 0) + delta) % 360;
+      if (nextRot < 0) nextRot += 360;
+      return {
+        ...prev,
+        rotation: nextRot
+      };
+    });
+  };
+
+  const handlePlacePart = async (coords) => {
+    if (!selectedLibraryPart) return;
+    
+    try {
+      const newId = Math.max(0, ...localParts.map(p => p.id)) + 1;
+      const candidate = {
+        id: newId,
+        filename: selectedLibraryPart.file_name,
+        partId: selectedLibraryPart.id,
+        source: 'manual',
+        sheetId: 0,
+        x: coords.x,
+        y: coords.y,
+        rotation: selectedLibraryPart.rotation || 0
+      };
+
+      // Query authoritative Clipper validation on click-to-place
+      const validateRes = await api.validatePlacement(jobId, {
+        candidate,
+        placements: localParts
+      });
+
+      if (validateRes.success && validateRes.valid) {
+        const newPart = {
+          ...candidate,
+          originalX: coords.x,
+          originalY: coords.y,
+          originalRotation: selectedLibraryPart.rotation || 0,
+          geometry: selectedLibraryPart.geometry,
+          holes: selectedLibraryPart.holes,
+          boundingBox: selectedLibraryPart.boundingBox
+        };
+
+        setPast(prev => [...prev, localParts]);
+        setLocalParts(prev => [...prev, newPart]);
+        setFuture([]);
+        setIsDirty(true);
+        setSelectedLibraryPart(null);
+      } else {
+        alert(`Placement rejected: ${validateRes.reason === 'outside_sheet' ? 'Extends outside sheet boundaries.' : 'Collides with another placed part.'}`);
+      }
+    } catch (err) {
+      console.error('Validation request failed:', err);
+      alert('Error validating placement on the server.');
+    }
+  };
+
+  const handleDeletePart = (partId) => {
+    setPast(prev => [...prev, localParts]);
+    setFuture([]);
+    setLocalParts(prev => prev.filter(p => p.id !== partId));
+    setSelectedPartId(null);
+    setIsDirty(true);
+  };
+
+  const handleMovePart = (partId, nextX, nextY) => {
+    setIsDirty(true);
+    setLocalParts(prev => prev.map(p => {
+      if (p.id === partId) {
+        return { ...p, x: nextX, y: nextY };
+      }
+      return p;
+    }));
+  };
+
+  const handleUndo = () => {
+    if (past.length === 0) return;
+    const previous = past[past.length - 1];
+    setFuture(prev => [localParts, ...prev]);
+    setLocalParts(previous);
+    setPast(prev => prev.slice(0, prev.length - 1));
+    setSelectedPartId(null);
+    setIsDirty(true);
+  };
+
+  const handleRedo = () => {
+    if (future.length === 0) return;
+    const next = future[0];
+    setPast(prev => [...prev, localParts]);
+    setLocalParts(next);
+    setFuture(prev => prev.slice(1));
+    setSelectedPartId(null);
+    setIsDirty(true);
+  };
+
+  const handleSelectPlacement = (pId) => {
+    setSelectedPartId(pId);
+    setLocalPartsBeforeDrag(localParts);
+  };
+
+
   const handleSaveLayout = async () => {
     try {
       setSavingLayout(true);
@@ -557,7 +820,10 @@ export default function Result() {
         filename: p.filename,
         x: p.x,
         y: p.y,
-        rotation: p.rotation
+        rotation: p.rotation,
+        partId: p.partId ? parseInt(p.partId, 10) : null,
+        sheetId: p.sheetId ? parseInt(p.sheetId, 10) : 0,
+        source: p.source || 'deepnest'
       }));
 
       let strategyQuery = '';
@@ -569,6 +835,7 @@ export default function Result() {
 
       await api.updateLayoutPlacements(jobId, payloadParts, strategyQuery);
       alert('Nesting layout coordinates saved successfully!');
+      setIsDirty(false);
       
       await fetchResult();
       setSelectedPartId(null);
@@ -651,16 +918,58 @@ export default function Result() {
         }
       }
 
+      let files = [];
+      if (result && result.projectId) {
+        try {
+          const filesRes = await api.getProjectFiles(result.projectId);
+          if (filesRes.success && filesRes.data) {
+            files = filesRes.data;
+            setProjectFiles(files);
+          }
+        } catch (err) {
+          console.error('Error fetching project files:', err);
+        }
+      }
+
       try {
         const layoutRes = await api.getLayoutPlacements(jobId, strategyQuery);
         if (layoutRes && layoutRes.parts) {
-          const partsWithOrig = layoutRes.parts.map(p => ({
-            ...p,
-            originalX: p.x,
-            originalY: p.y,
-            originalRotation: p.rotation
+          const partsWithOrig = await Promise.all(layoutRes.parts.map(async (p) => {
+            const fileMatch = files.find(f => f.id === p.partId || f.file_name === p.filename);
+            const partId = fileMatch ? fileMatch.id : null;
+            let extra = {};
+
+            if (p.source === 'manual' && fileMatch) {
+              try {
+                const url = `http://localhost:5000/${fileMatch.file_path}.svg`;
+                const res = await axios.get(url, { responseType: 'text' });
+                const parsedGeometry = parseSinglePartSvg(res.data);
+                extra = {
+                  geometry: parsedGeometry.geometry,
+                  holes: parsedGeometry.holes,
+                  centroid: parsedGeometry.centroid,
+                  boundingBox: parsedGeometry.boundingBox
+                };
+              } catch (svgErr) {
+                console.error(`Failed to load manual part geometry on load:`, svgErr);
+              }
+            }
+
+            return {
+              ...p,
+              partId,
+              source: p.source || 'deepnest',
+              sheetId: p.sheetId || 0,
+              originalX: p.x,
+              originalY: p.y,
+              originalRotation: p.rotation,
+              ...extra
+            };
           }));
           setLocalParts(partsWithOrig);
+          setPast([]);
+          setFuture([]);
+          setIsDirty(false);
         }
       } catch (layErr) {
         console.error('Error loading layout placements:', layErr);
@@ -708,6 +1017,10 @@ export default function Result() {
 
   const handleMouseUp = () => {
     setIsDragging(false);
+    if (draggingPartId !== null) {
+      setPast(prev => [...prev, localPartsBeforeDrag]);
+      setFuture([]);
+    }
     setDraggingPartId(null);
   };
 
@@ -944,11 +1257,29 @@ export default function Result() {
           </Button>
         </Paper>
       ) : (
-        <Grid container spacing={4}>
-          {/* Left panel: Stats summaries */}
+        <Grid container spacing={3}>
+          {/* Column 1: Parts Library sidebar */}
+          <Grid item xs={12} md={3}>
+            <PartsLibrary
+              parts={projectFiles.map(file => {
+                const autoCount = localParts.filter(p => (p.partId === file.id || p.filename === file.file_name) && p.source === 'deepnest').length;
+                const manualCount = localParts.filter(p => (p.partId === file.id || p.filename === file.file_name) && p.source === 'manual').length;
+                return {
+                  ...file,
+                  autoCount,
+                  manualCount,
+                  placedCount: autoCount + manualCount
+                };
+              })}
+              selectedPartId={selectedLibraryPart ? selectedLibraryPart.id : null}
+              onSelectPart={handleSelectLibraryPart}
+            />
+          </Grid>
+
+          {/* Column 2: Stats & Controls */}
           <Grid item xs={12} md={4}>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-              {/* Status Header */}
+              {/* Calculations Status */}
               <Paper sx={{ p: 3, bgcolor: '#0f1319', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '12px' }}>
                 <Typography variant="subtitle2" sx={{ color: '#565f89', fontWeight: 700, textTransform: 'uppercase', mb: 1 }}>
                   Calculations Status
@@ -961,187 +1292,101 @@ export default function Result() {
                 </Box>
               </Paper>
 
-              {/* Utilization Card */}
-              <Paper sx={{ p: 3, bgcolor: '#0f1319', border: '1px solid rgba(13, 148, 136, 0.3)', borderRadius: '12px' }}>
-                <Typography variant="subtitle2" sx={{ color: '#0d9488', fontWeight: 700, textTransform: 'uppercase', mb: 1 }}>
-                  Sheet Utilization
-                </Typography>
-                <Typography variant="h2" sx={{ color: '#ffffff', fontWeight: 900, mb: 1 }}>
-                  {activeUtilization !== null ? `${activeUtilization.toFixed(2)}%` : '0%'}
-                </Typography>
-                <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 500 }}>
-                  Active material footprint placed on sheet layout
-                </Typography>
-              </Paper>
+              {/* Manufacturing Statistics component */}
+              <Statistics
+                sheetWidth={sheetWidth}
+                sheetHeight={sheetHeight}
+                materialType={result?.materialType}
+                materialThickness={result?.materialThickness}
+                remnantId={result?.remnantId}
+                sheetArea={result?.sheetArea}
+                usedArea={activeUsedArea}
+                remainingArea={activeRemainingArea}
+                remnantValue={activeRemnantValue}
+                cuttingTime={activeCuttingTime}
+                runtime={activeRuntime}
+                utilization={activeUtilization}
+                totalParts={result?.totalParts !== undefined && result?.totalParts !== null ? result.totalParts : parsedPolygons.length}
+                placedParts={activePlacedParts}
+                weight={activeWeight}
+                materialCost={activeMaterialCost}
+              />
 
-              {/* Summary Panel */}
+              {/* Exports Panel */}
               <Paper sx={{ p: 3, bgcolor: '#0f1319', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '12px' }}>
                 <Typography variant="subtitle2" sx={{ color: '#565f89', fontWeight: 700, textTransform: 'uppercase', mb: 2 }}>
-                  Nesting Run Summary
+                  Export Center
                 </Typography>
-                
                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Material</Typography>
-                    <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      {result?.materialType || 'Mild Steel'}
-                    </Typography>
-                  </Box>
-                  <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Layout Source</Typography>
-                    <Typography variant="body2" sx={{ 
-                      color: result?.layoutSource === 'MANUAL EDIT' ? '#ec4899' : (result?.layoutSource === 'REGENERATED AUTO NEST' ? '#bb9af7' : '#0d9488'), 
-                      fontWeight: 800,
-                      fontSize: '0.85rem'
-                    }}>
-                      {result?.layoutSource || 'AUTO NEST'}
-                    </Typography>
-                  </Box>
-                  <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Thickness</Typography>
-                    <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      {result?.materialThickness !== undefined && result?.materialThickness !== null ? `${result.materialThickness} mm` : '1.00 mm'}
-                    </Typography>
-                  </Box>
-                  <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Sheet Size</Typography>
-                    <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      {sheetWidth} x {sheetHeight} mm
-                    </Typography>
-                  </Box>
-                  <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
-                  {result?.remnantId && (
-                    <>
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Stock Source</Typography>
-                        <Typography variant="body2" sx={{ color: '#06b6d4', fontWeight: 800 }}>
-                          Leftover Remnant (RM-{String(result.remnantId).padStart(4, '0')})
-                        </Typography>
-                      </Box>
-                      <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
-                    </>
-                  )}
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Sheet Area</Typography>
-                    <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      {formatArea(result?.sheetArea)}
-                    </Typography>
-                  </Box>
-                  <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Used Area</Typography>
-                    <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      {formatArea(activeUsedArea)}
-                    </Typography>
-                  </Box>
-                  <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Remaining Area</Typography>
-                    <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      {formatArea(activeRemainingArea)}
-                    </Typography>
-                  </Box>
-                  <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Est. Remnant Value</Typography>
-                    <Typography variant="body2" sx={{ color: '#10b981', fontWeight: 700 }}>
-                      {formatCurrency(activeRemnantValue)}
-                    </Typography>
-                  </Box>
-                  <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Est. Cutting Time</Typography>
-                    <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      {formatTime(activeCuttingTime)}
-                    </Typography>
-                  </Box>
-                  <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Layout Gen. Runtime</Typography>
-                    <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      {formatRuntime(activeRuntime)}
-                    </Typography>
-                  </Box>
-                  <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Sheet Utilization</Typography>
-                    <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      {activeUtilization !== null ? `${activeUtilization.toFixed(2)}%` : '0.00%'}
-                    </Typography>
-                  </Box>
-                  <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Total Parts Requested</Typography>
-                    <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      {result?.totalParts !== undefined && result?.totalParts !== null ? result.totalParts : parsedPolygons.length}
-                    </Typography>
-                  </Box>
-                  <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Total Parts Placed</Typography>
-                    <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      {activePlacedParts !== undefined && activePlacedParts !== null ? activePlacedParts : parsedPolygons.length}
-                    </Typography>
-                  </Box>
-                </Box>
-              </Paper>
-
-              {/* Cost Summary Card */}
-              <Paper sx={{ p: 3, bgcolor: '#0f1319', border: '1px solid rgba(13, 148, 136, 0.3)', borderRadius: '12px' }}>
-                <Typography variant="subtitle2" sx={{ color: '#0d9488', fontWeight: 700, textTransform: 'uppercase', mb: 2 }}>
-                  Cost Summary
-                </Typography>
-                
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Material</Typography>
-                    <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      {result?.materialType || 'Mild Steel'}
-                    </Typography>
-                  </Box>
-                  <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
-                  
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Thickness</Typography>
-                    <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      {result?.materialThickness !== undefined && result?.materialThickness !== null ? `${result.materialThickness.toFixed(2)} mm` : '1.00 mm'}
-                    </Typography>
-                  </Box>
-                  <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
-
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Estimated Weight</Typography>
-                    <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      {activeWeight !== undefined && activeWeight !== null ? `${activeWeight.toFixed(2)} kg` : '0.00 kg'}
-                    </Typography>
-                  </Box>
-                  <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
-
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Material Cost</Typography>
-                    <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      ₹ {activeMaterialCost !== undefined && activeMaterialCost !== null ? activeMaterialCost.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
-                    </Typography>
-                  </Box>
-                  <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
-
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Scrap Value</Typography>
-                    <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      ₹ {activeScrapValue !== undefined && activeScrapValue !== null ? activeScrapValue.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
-                    </Typography>
-                  </Box>
-                  <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
-
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mt: 1 }}>
-                    <Typography variant="body1" sx={{ color: '#ffffff', fontWeight: 800 }}>Total Cost</Typography>
-                    <Typography variant="h5" sx={{ color: '#0d9488', fontWeight: 900 }}>
-                      ₹ {activeTotalEstimatedCost !== undefined && activeTotalEstimatedCost !== null ? activeTotalEstimatedCost.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
-                    </Typography>
-                  </Box>
+                  <Button 
+                    variant="outlined" 
+                    fullWidth 
+                    onClick={() => handleExportLayout('pdf')}
+                    disabled={exportLoading.pdf}
+                    sx={{
+                      borderColor: 'rgba(255, 255, 255, 0.12)',
+                      color: '#a9b1d6',
+                      textTransform: 'none',
+                      fontWeight: 700,
+                      justifyContent: 'flex-start',
+                      px: 2,
+                      py: 1,
+                      '&:hover': { 
+                        borderColor: '#10b981', 
+                        bgcolor: 'rgba(16, 185, 129, 0.04)',
+                        color: '#10b981'
+                      },
+                      '&.Mui-disabled': { borderColor: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.2)' }
+                    }}
+                  >
+                    {exportLoading.pdf ? 'Generating PDF...' : '📄 Export PDF Report'}
+                  </Button>
+                  <Button 
+                    variant="outlined" 
+                    fullWidth 
+                    onClick={() => handleExportLayout('svg')}
+                    disabled={exportLoading.svg}
+                    sx={{
+                      borderColor: 'rgba(255, 255, 255, 0.12)',
+                      color: '#a9b1d6',
+                      textTransform: 'none',
+                      fontWeight: 700,
+                      justifyContent: 'flex-start',
+                      px: 2,
+                      py: 1,
+                      '&:hover': { 
+                        borderColor: '#0d9488', 
+                        bgcolor: 'rgba(13, 148, 136, 0.04)',
+                        color: '#0d9488'
+                      },
+                      '&.Mui-disabled': { borderColor: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.2)' }
+                    }}
+                  >
+                    {exportLoading.svg ? 'Extracting SVG...' : '📐 Export DXF/SVG Drawing'}
+                  </Button>
+                  <Button 
+                    variant="outlined" 
+                    fullWidth 
+                    onClick={() => handleExportLayout('json')}
+                    disabled={exportLoading.json}
+                    sx={{
+                      borderColor: 'rgba(255, 255, 255, 0.12)',
+                      color: '#a9b1d6',
+                      textTransform: 'none',
+                      fontWeight: 700,
+                      justifyContent: 'flex-start',
+                      px: 2,
+                      py: 1,
+                      '&:hover': { 
+                        borderColor: '#bb9af7', 
+                        bgcolor: 'rgba(187, 154, 247, 0.04)',
+                        color: '#bb9af7'
+                      },
+                      '&.Mui-disabled': { borderColor: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.2)' }
+                    }}
+                  >
+                    {exportLoading.json ? 'Structuring JSON...' : '📦 Export JSON Layout'}
+                  </Button>
                 </Box>
               </Paper>
 
@@ -1180,12 +1425,8 @@ export default function Result() {
                         checked={isAdvisorEnabled}
                         onChange={(e) => handleAdvisorToggle(e.target.checked)}
                         sx={{
-                          '& .MuiSwitch-switchBase.Mui-checked': {
-                            color: '#10b981',
-                          },
-                          '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
-                            backgroundColor: '#10b981',
-                          },
+                          '& .MuiSwitch-switchBase.Mui-checked': { color: '#10b981' },
+                          '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#10b981' }
                         }}
                       />
                     }
@@ -1217,7 +1458,7 @@ export default function Result() {
                   </Box>
                 ) : aiError ? (
                   <Box sx={{ py: 1 }}>
-                    <Alert severity="warning" variant="outlined" sx={{ color: '#f7768e', borderColor: 'rgba(247,118,142,0.2)', '& .MuiAlert-icon': { color: '#f7768e' }, wordBreak: 'break-word' }}>
+                    <Alert severity="warning" variant="outlined" sx={{ color: '#f7768e', borderColor: 'rgba(247,118,142,0.2)', '& .MuiAlert-icon': { color: '#f7768e' } }}>
                       {aiError}
                     </Alert>
                     <Button 
@@ -1232,33 +1473,29 @@ export default function Result() {
                 ) : aiData ? (
                   <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                     <Box>
-                      <Typography variant="body2" sx={{ color: '#ffffff', lineHeight: 1.6, fontWeight: 500, wordBreak: 'break-word' }}>
+                      <Typography variant="body2" sx={{ color: '#ffffff', lineHeight: 1.6, fontWeight: 500 }}>
                         {aiData.summary}
                       </Typography>
                     </Box>
-                    
                     <Divider sx={{ borderColor: 'rgba(255,255,255,0.06)' }} />
-                    
                     <Box>
                       <Typography variant="caption" sx={{ color: '#565f89', fontWeight: 700, display: 'block', mb: 1, textTransform: 'uppercase' }}>
                         Optimization Recommendations
                       </Typography>
                       <Box component="ul" sx={{ m: 0, pl: 2, color: '#a9b1d6', display: 'flex', flexDirection: 'column', gap: 1 }}>
                         {aiData.recommendations.map((rec, i) => (
-                          <Box component="li" key={i} sx={{ fontSize: '0.8rem', lineHeight: 1.5, wordBreak: 'break-word' }}>
+                          <Box component="li" key={i} sx={{ fontSize: '0.8rem', lineHeight: 1.5 }}>
                             {rec}
                           </Box>
                         ))}
                       </Box>
                     </Box>
-                    
                     <Divider sx={{ borderColor: 'rgba(255,255,255,0.06)' }} />
-                    
                     <Box sx={{ bgcolor: 'rgba(6, 182, 212, 0.05)', border: '1px solid rgba(6, 182, 212, 0.15)', borderRadius: '8px', p: 1.5 }}>
                       <Typography variant="caption" sx={{ color: '#06b6d4', fontWeight: 800, display: 'block', textTransform: 'uppercase', mb: 0.5 }}>
                         Potential Savings
                       </Typography>
-                      <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700, wordBreak: 'break-word' }}>
+                      <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
                         {aiData.estimatedSavings}
                       </Typography>
                     </Box>
@@ -1283,6 +1520,63 @@ export default function Result() {
                   </Box>
                 )}
               </Paper>
+            </Box>
+          </Grid>
+
+          {/* Column 3: Layout Canvas Viewport & Coordinate Shifter */}
+          <Grid item xs={12} md={5}>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              {/* Active sheet canvas */}
+              <Paper sx={{ p: 3, bgcolor: '#0f1319', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '12px' }}>
+                <Typography variant="h6" sx={{ color: '#ffffff', fontWeight: 700, mb: 2 }}>
+                  Sheet Layout Board
+                </Typography>
+                
+                {/* Toolbar */}
+                <Toolbar
+                  showLabels={showLabels}
+                  setShowLabels={setShowLabels}
+                  showGrid={showGrid}
+                  setShowGrid={setShowGrid}
+                  isEditMode={isEditMode}
+                  setIsEditMode={setIsEditMode}
+                  zoom={zoom}
+                  onZoomIn={handleZoomIn}
+                  onZoomOut={handleZoomOut}
+                  onResetZoom={handleResetZoom}
+                  canUndo={past.length > 0}
+                  canRedo={future.length > 0}
+                  onUndo={handleUndo}
+                  onRedo={handleRedo}
+                  selectedLibraryPart={selectedLibraryPart}
+                  onCancelPlacement={() => setSelectedLibraryPart(null)}
+                />
+
+                {/* Canvas */}
+                <LayoutCanvas
+                  sheetWidth={sheetWidth}
+                  sheetHeight={sheetHeight}
+                  sheetX={sheetX}
+                  sheetY={sheetY}
+                  placements={localParts}
+                  parsedPolygons={parsedPolygons}
+                  selectedLibraryPart={selectedLibraryPart}
+                  selectedPlacementId={selectedPartId}
+                  onSelectPlacement={handleSelectPlacement}
+                  hoveredPartId={hoveredPartId}
+                  setHoveredPartId={setHoveredPartId}
+                  draggingPartId={draggingPartId}
+                  setDraggingPartId={setDraggingPartId}
+                  zoom={zoom}
+                  setZoom={setZoom}
+                  pan={pan}
+                  setPan={setPan}
+                  showGrid={showGrid}
+                  isEditMode={isEditMode}
+                  onPlacePart={handlePlacePart}
+                  onMovePart={handleMovePart}
+                />
+              </Paper>
 
               {/* Manual Nest Editor Card */}
               {isEditMode && (
@@ -1295,11 +1589,11 @@ export default function Result() {
                     boxShadow: '0 0 15px rgba(236, 72, 153, 0.1)',
                   }}
                 >
-                  <Typography variant="h6" sx={{ color: '#ffffff', fontWeight: 800, mb: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
-                    📐 Manual Nest Editor
+                  <Typography variant="subtitle1" sx={{ color: '#ffffff', fontWeight: 800, mb: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
+                    📐 Coordinate Shifter
                   </Typography>
                   <Typography variant="caption" sx={{ color: '#565f89', display: 'block', mb: 2 }}>
-                    Fine-tune positions of nested parts on the plate.
+                    Precisely shift or rotate selected parts on the active plate.
                   </Typography>
                   <Divider sx={{ borderColor: 'rgba(255,255,255,0.06)', mb: 2 }} />
 
@@ -1339,7 +1633,7 @@ export default function Result() {
                           </Box>
 
                           {/* Control Buttons */}
-                          <Box>
+                          <Box sx={{ width: '100%' }}>
                             <Typography variant="caption" sx={{ color: '#565f89', fontWeight: 700, display: 'block', mb: 1, textTransform: 'uppercase' }}>
                               Translate (Step: 10mm)
                             </Typography>
@@ -1349,36 +1643,34 @@ export default function Result() {
                                 <Button 
                                   variant="outlined" 
                                   size="small" 
-                                  fullWidth 
+                                  fullWidth
                                   onClick={() => handleTranslatePart(selectedPartId, 0, -10)}
-                                  sx={{ color: '#ffffff', borderColor: 'rgba(255,255,255,0.1)', minWidth: 0, px: 0 }}
+                                  sx={{ color: '#a9b1d6', borderColor: 'rgba(255,255,255,0.1)', fontWeight: 700 }}
                                 >
                                   ▲ Up
                                 </Button>
                               </Grid>
                               <Grid item xs={4}></Grid>
-                              
+
                               <Grid item xs={4}>
                                 <Button 
                                   variant="outlined" 
                                   size="small" 
-                                  fullWidth 
+                                  fullWidth
                                   onClick={() => handleTranslatePart(selectedPartId, -10, 0)}
-                                  sx={{ color: '#ffffff', borderColor: 'rgba(255,255,255,0.1)', minWidth: 0, px: 0 }}
+                                  sx={{ color: '#a9b1d6', borderColor: 'rgba(255,255,255,0.1)', fontWeight: 700 }}
                                 >
                                   ◀ Left
                                 </Button>
                               </Grid>
-                              <Grid item xs={4}>
-                                <Box sx={{ textAlign: 'center', color: '#565f89', fontSize: '0.8rem', fontWeight: 600 }}>Move</Box>
-                              </Grid>
+                              <Grid item xs={4}></Grid>
                               <Grid item xs={4}>
                                 <Button 
                                   variant="outlined" 
                                   size="small" 
-                                  fullWidth 
+                                  fullWidth
                                   onClick={() => handleTranslatePart(selectedPartId, 10, 0)}
-                                  sx={{ color: '#ffffff', borderColor: 'rgba(255,255,255,0.1)', minWidth: 0, px: 0 }}
+                                  sx={{ color: '#a9b1d6', borderColor: 'rgba(255,255,255,0.1)', fontWeight: 700 }}
                                 >
                                   Right ▶
                                 </Button>
@@ -1389,9 +1681,9 @@ export default function Result() {
                                 <Button 
                                   variant="outlined" 
                                   size="small" 
-                                  fullWidth 
+                                  fullWidth
                                   onClick={() => handleTranslatePart(selectedPartId, 0, 10)}
-                                  sx={{ color: '#ffffff', borderColor: 'rgba(255,255,255,0.1)', minWidth: 0, px: 0 }}
+                                  sx={{ color: '#a9b1d6', borderColor: 'rgba(255,255,255,0.1)', fontWeight: 700 }}
                                 >
                                   ▼ Down
                                 </Button>
@@ -1400,63 +1692,68 @@ export default function Result() {
                             </Grid>
                           </Box>
 
-                          <Divider sx={{ borderColor: 'rgba(255,255,255,0.06)' }} />
+                          <Divider sx={{ borderColor: 'rgba(255, 255, 255, 0.06)', my: 2 }} />
 
-                          {/* Rotation Buttons */}
-                          <Box>
-                            <Typography variant="caption" sx={{ color: '#565f89', fontWeight: 700, display: 'block', mb: 1, textTransform: 'uppercase' }}>
-                              Rotate
-                            </Typography>
-                            <Box sx={{ display: 'flex', gap: 1 }}>
-                              <Button
-                                variant="outlined"
-                                size="small"
-                                fullWidth
-                                onClick={() => handleRotatePart(selectedPartId, -90)}
-                                sx={{ color: '#ffffff', borderColor: 'rgba(255,255,255,0.1)', textTransform: 'none', fontSize: '0.75rem', px: 0 }}
-                              >
-                                ↺ Rotate -90°
-                              </Button>
-                              <Button
-                                variant="outlined"
-                                size="small"
-                                fullWidth
-                                onClick={() => handleRotatePart(selectedPartId, 90)}
-                                sx={{ color: '#ffffff', borderColor: 'rgba(255,255,255,0.1)', textTransform: 'none', fontSize: '0.75rem', px: 0 }}
-                              >
-                                Rotate +90° ↻
-                              </Button>
+                          <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
+                            <Box sx={{ flex: 1 }}>
+                              <Typography variant="caption" sx={{ color: '#565f89', fontWeight: 700, display: 'block', mb: 1, textTransform: 'uppercase' }}>
+                                Rotation Tools
+                              </Typography>
+                              <Box sx={{ display: 'flex', gap: 1 }}>
+                                <Button 
+                                  variant="outlined" 
+                                  size="small" 
+                                  fullWidth
+                                  onClick={() => handleRotatePart(selectedPartId, -90)}
+                                  sx={{ color: '#a9b1d6', borderColor: 'rgba(255,255,255,0.1)', fontWeight: 700, textTransform: 'none' }}
+                                >
+                                  Rotate -90°
+                                </Button>
+                                <Button 
+                                  variant="outlined" 
+                                  size="small" 
+                                  fullWidth
+                                  onClick={() => handleRotatePart(selectedPartId, 90)}
+                                  sx={{ color: '#a9b1d6', borderColor: 'rgba(255,255,255,0.1)', fontWeight: 700, textTransform: 'none' }}
+                                >
+                                  Rotate +90°
+                                </Button>
+                              </Box>
                             </Box>
                           </Box>
+
+                          <Divider sx={{ borderColor: 'rgba(255,255,255,0.06)' }} />
+
+                          <Button 
+                            variant="contained" 
+                            color="error"
+                            size="small" 
+                            fullWidth
+                            onClick={() => handleDeletePart(selectedPartId)}
+                            sx={{ bgcolor: '#ef4444', color: '#ffffff', fontWeight: 800, textTransform: 'none', '&:hover': { bgcolor: '#dc2626' } }}
+                          >
+                            🗑️ Delete Placed Part
+                          </Button>
                         </Box>
                       );
                     })()
                   ) : (
-                    <Box sx={{ py: 3, textAlign: 'center', color: '#565f89', bgcolor: 'rgba(255,255,255,0.01)', border: '1px dashed rgba(255,255,255,0.06)', borderRadius: '8px' }}>
-                      <Typography variant="body2">
-                        Click a part on the sheet preview grid to select and adjust it.
-                      </Typography>
-                    </Box>
+                    <Button
+                      variant="contained"
+                      fullWidth
+                      disabled={savingLayout || localParts.length === 0 || !isDirty}
+                      onClick={handleSaveLayout}
+                      sx={{
+                        bgcolor: '#ec4899',
+                        fontWeight: 800,
+                        textTransform: 'none',
+                        '&:hover': { bgcolor: '#db2777' },
+                        '&.Mui-disabled': { bgcolor: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.3)' }
+                      }}
+                    >
+                      {savingLayout ? 'Saving Layout...' : 'Save Manual Layout'}
+                    </Button>
                   )}
-
-                  <Divider sx={{ borderColor: 'rgba(255,255,255,0.06)', my: 2 }} />
-
-                  {/* Save Layout Action */}
-                  <Button
-                    variant="contained"
-                    fullWidth
-                    disabled={savingLayout || localParts.length === 0}
-                    onClick={handleSaveLayout}
-                    sx={{
-                      bgcolor: '#ec4899',
-                      fontWeight: 800,
-                      textTransform: 'none',
-                      '&:hover': { bgcolor: '#db2777' },
-                      '&.Mui-disabled': { bgcolor: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.3)' }
-                    }}
-                  >
-                    {savingLayout ? 'Saving Layout...' : 'Save Manual Layout'}
-                  </Button>
                 </Paper>
               )}
 
@@ -1757,6 +2054,54 @@ export default function Result() {
                                   {poly.label}
                                 </text>
                               )}
+                            </g>
+                          );
+                        })}
+
+                      {/* Render Manually Added Parts (Source === 'manual') */}
+                      {localParts
+                        .filter(p => p.source === 'manual')
+                        .map((part) => {
+                          const isHovered = hoveredPartId === part.id;
+                          const isSelected = selectedPartId === part.id;
+
+                          // If manual part's geometry is not loaded yet, skip
+                          if (!part.geometry || part.geometry.length === 0) return null;
+
+                          const partCentroid = getCentroid(part.geometry);
+                          const pathD = getPathData(part.geometry, part.holes);
+                          const transformStr = `translate(${part.x}, ${part.y}) rotate(${part.rotation}, ${partCentroid.x}, ${partCentroid.y})`;
+
+                          let partFill = 'rgba(187, 154, 247, 0.15)'; // Magenta/Purple translucent
+                          let partStroke = '#bb9af7';
+                          let strokeWidth = 1.5;
+
+                          if (isSelected) {
+                            partFill = 'rgba(236, 72, 153, 0.35)';
+                            partStroke = '#ec4899';
+                            strokeWidth = 2.5;
+                          } else if (isHovered) {
+                            partFill = 'rgba(187, 154, 247, 0.35)';
+                            partStroke = '#ff9e64';
+                          }
+
+                          return (
+                            <g key={`manual-${part.id}`} transform={transformStr}>
+                              <path
+                                d={pathD}
+                                fill={partFill}
+                                stroke={partStroke}
+                                strokeWidth={strokeWidth}
+                                fillRule="evenodd"
+                                data-part-id={part.id}
+                                style={{
+                                  transition: 'fill 0.15s ease, stroke 0.15s ease',
+                                  cursor: isEditMode ? (draggingPartId === part.id ? 'grabbing' : 'grab') : 'pointer'
+                                }}
+                                onMouseDown={(e) => handlePartMouseDown(e, part.id)}
+                                onMouseEnter={() => setHoveredPartId(part.id)}
+                                onMouseLeave={() => setHoveredPartId(null)}
+                              />
                             </g>
                           );
                         })}

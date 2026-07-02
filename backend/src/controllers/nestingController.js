@@ -590,7 +590,10 @@ const getLayoutPlacements = async (req, res) => {
       filename: p.filename || '',
       x: p.x,
       y: p.y,
-      rotation: p.rotation
+      rotation: p.rotation,
+      partId: p.partId || null,
+      sheetId: p.sheetId || 0,
+      source: p.source || 'deepnest'
     }));
 
     return res.status(200).json({ parts });
@@ -1013,8 +1016,38 @@ const applyStrategy = async (req, res) => {
   }
 };
 
-  regenerateLayout,
-  applyStrategy
+const validateLayoutPlacement = async (req, res) => {
+  const { jobId } = req.params;
+  const { candidate, placements } = req.body;
+
+  try {
+    const jobQuery = 'SELECT project_id FROM nest_jobs WHERE id = $1';
+    const jobResult = await pool.query(jobQuery, [jobId]);
+
+    if (jobResult.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Job not found' });
+    }
+
+    const job = jobResult.rows[0];
+
+    const filesQuery = 'SELECT * FROM uploaded_files WHERE project_id = $1 ORDER BY id ASC';
+    const filesResult = await pool.query(filesQuery, [job.project_id]);
+
+    const validationResult = await nestingService.validatePlacement(jobId, filesResult.rows, placements, candidate);
+    return res.status(200).json({
+      success: true,
+      ...validationResult
+    });
+  } catch (err) {
+    console.error('Error in validateLayoutPlacement:', err.message);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal Server Error',
+      error: err.message
+    });
+  }
+};
+
 module.exports = {
   startNestingJob,
   getJobStatus,
@@ -1023,5 +1056,6 @@ module.exports = {
   updateLayoutPlacements,
   resetLayout,
   regenerateLayout,
-  applyStrategy
+  applyStrategy,
+  validateLayoutPlacement
 };

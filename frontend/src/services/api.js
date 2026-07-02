@@ -128,6 +128,10 @@ export const api = {
     const response = await apiClient.post(`/nesting/regenerate/${jobId}`);
     return response.data;
   },
+  validatePlacement: async (jobId, { candidate, placements }) => {
+    const response = await apiClient.post(`/nesting/layout/validate/${jobId}`, { candidate, placements });
+    return response.data;
+  },
 
   // Export Center
   exportPDF: async (jobId, enabled = true) => {

@@ -3,6 +3,48 @@ const path = require('path');
 const fs = require('fs');
 const { pool } = require('../config/database');
 
+const metadataCache = new Map();
+
+const getSvgMetadata = (absoluteFilePath) => {
+  const svgPath = absoluteFilePath + '.svg';
+  if (!fs.existsSync(svgPath)) {
+    return { width: null, height: null, viewBox: null };
+  }
+  
+  if (metadataCache.has(svgPath)) {
+    return metadataCache.get(svgPath);
+  }
+
+  try {
+    const fd = fs.openSync(svgPath, 'r');
+    const buffer = Buffer.alloc(1024); // Read first 1KB
+    const bytesRead = fs.readSync(fd, buffer, 0, 1024, 0);
+    fs.closeSync(fd);
+    
+    const content = buffer.toString('utf8', 0, bytesRead);
+    const svgTagMatch = content.match(/<svg[^>]*>/);
+    if (svgTagMatch) {
+      const svgTag = svgTagMatch[0];
+      const widthMatch = svgTag.match(/width="([^"]+)"/);
+      const heightMatch = svgTag.match(/height="([^"]+)"/);
+      const viewBoxMatch = svgTag.match(/viewBox="([^"]+)"/);
+
+      const metadata = {
+        width: widthMatch ? widthMatch[1] : null,
+        height: heightMatch ? heightMatch[1] : null,
+        viewBox: viewBoxMatch ? viewBoxMatch[1] : null
+      };
+      
+      metadataCache.set(svgPath, metadata);
+      return metadata;
+    }
+  } catch (err) {
+    console.error(`[FileController] Failed to parse SVG metadata for ${svgPath}:`, err.message);
+  }
+  
+  return { width: null, height: null, viewBox: null };
+};
+
 // Define destination directory (src/uploads/projects)
 const uploadDir = path.join(__dirname, '../uploads/projects');
 
@@ -107,10 +149,20 @@ const uploadDxfFile = async (req, res) => {
     const values = [project_id, req.file.originalname, relativePath, quantity, area];
     const result = await pool.query(query, values);
 
+const row = result.rows[0];
+    const absolutePathAfter = path.join(__dirname, '..', row.file_path);
+    const metadata = getSvgMetadata(absolutePathAfter);
+    const enrichedRow = {
+      ...row,
+      width: metadata.width,
+      height: metadata.height,
+      viewBox: metadata.viewBox
+    };
+
     return res.status(201).json({
       success: true,
       message: 'File uploaded successfully',
-      data: result.rows[0]
+      data: enrichedRow
     });
   } catch (err) {
     console.error('Error in uploadDxfFile:', err.message);
@@ -136,9 +188,20 @@ const getFilesByProject = async (req, res) => {
     const query = 'SELECT * FROM uploaded_files WHERE project_id = $1 ORDER BY uploaded_at DESC';
     const result = await pool.query(query, [projectId]);
 
+    const enrichedRows = result.rows.map(row => {
+      const absolutePath = path.join(__dirname, '..', row.file_path);
+      const metadata = getSvgMetadata(absolutePath);
+      return {
+        ...row,
+        width: metadata.width,
+        height: metadata.height,
+        viewBox: metadata.viewBox
+      };
+    });
+
     return res.status(200).json({
       success: true,
-      data: result.rows
+      data: enrichedRows
     });
   } catch (err) {
     console.error('Error in getFilesByProject:', err.message);

@@ -1841,6 +1841,7 @@ const updateLayoutFiles = async (jobId, projectFiles, placements, strategy = nul
         poly.id = partsToNest.length + 1;
         poly.rotation = 0;
         poly.filename = f.file_name;
+        poly.partId = f.id;
         partsToNest.push(poly);
       });
     }
@@ -1857,7 +1858,10 @@ const updateLayoutFiles = async (jobId, projectFiles, placements, strategy = nul
       x: parseFloat(p.x),
       y: parseFloat(p.y),
       rotation: parseFloat(p.rotation),
-      filename: p.filename
+      filename: p.filename,
+      partId: p.partId ? parseInt(p.partId, 10) : null,
+      sheetId: p.sheetId ? parseInt(p.sheetId, 10) : 0,
+      source: p.source || 'deepnest'
     });
   });
 
@@ -1882,7 +1886,7 @@ const updateLayoutFiles = async (jobId, projectFiles, placements, strategy = nul
 
   const obstacles = [];
   sheetplacements.forEach((placement, idx) => {
-    const origPart = partsToNest.find(p => p.id === placement.id);
+    const origPart = partsToNest.find(p => p.partId === placement.partId) || partsToNest.find(p => p.id === placement.id) || partsToNest.find(p => p.filename === placement.filename);
     if (!origPart) return;
 
     const renderOuter = rotatePolygon(origPart.originalPoints || origPart, placement.rotation);
@@ -1944,6 +1948,127 @@ const updateLayoutFiles = async (jobId, projectFiles, placements, strategy = nul
   };
 };
 
+const validatePlacement = async (jobId, projectFiles, placements, candidate) => {
+  const { pool } = require('../config/database');
+  const jobRes = await pool.query('SELECT * FROM nest_jobs WHERE id = $1', [jobId]);
+  if (jobRes.rows.length === 0) throw new Error('Job not found');
+  const job = jobRes.rows[0];
+
+  const sheetWidth = job.sheet_width;
+  const sheetHeight = job.sheet_height;
+
+  // Create sheet boundaries polygon
+  const sheetPoly = [
+    { x: 0, y: 0 },
+    { x: sheetWidth, y: 0 },
+    { x: sheetWidth, y: sheetHeight },
+    { x: 0, y: sheetHeight }
+  ];
+
+  const partsToNest = [];
+  prepareEnvironment();
+  const config = { clipperScale: 10000000 };
+
+  for (let f of projectFiles) {
+    const absolutePath = path.join(__dirname, '..', f.file_path);
+    const cachedSvgPath = absolutePath + '.svg';
+    let svgString = '';
+
+    if (fs.existsSync(cachedSvgPath)) {
+      svgString = fs.readFileSync(cachedSvgPath, 'utf8');
+    } else if (fs.existsSync(absolutePath)) {
+      svgString = fs.readFileSync(absolutePath, 'utf8');
+    } else {
+      continue;
+    }
+
+    const preprocRes = preprocessor.loadSvgString(svgString, 72);
+    const doc = new DOMParser().parseFromString(preprocRes.result, 'image/svg+xml');
+    const paths = doc.getElementsByTagName('path');
+
+    const allSegments = [];
+    for (let i = 0; i < paths.length; i++) {
+      const d = paths[i].getAttribute('d');
+      if (!d) continue;
+      const subPolys = preprocessor.pointsOnSvgPath(d, 0.5);
+      subPolys.forEach((poly) => {
+        if (poly && poly.length >= 2) {
+          allSegments.push(poly);
+        }
+      });
+    }
+
+    const mergedPolys = mergeSegments(allSegments, 1.0);
+    const rawPolys = [];
+    mergedPolys.forEach((poly) => {
+      if (poly.length > 2 && Math.abs(GeometryUtil.polygonArea(poly)) > 1) {
+        rawPolys.push(poly);
+      }
+    });
+
+    const filePolys = groupPolygonsByHierarchy(rawPolys);
+    filePolys.forEach((origPoly) => {
+      const bounds = GeometryUtil.getPolygonBounds(origPoly);
+      const tolerance = Math.max(1.0, Math.max(bounds.width, bounds.height) * 0.015);
+      const simplifiedOuter = simplifyPath(origPoly, tolerance);
+      const poly = simplifiedOuter.map(pt => ({ x: pt.x, y: pt.y, exact: pt.exact }));
+      
+      if (origPoly.children && origPoly.children.length > 0) {
+        poly.children = origPoly.children.map(child => {
+          const childBounds = GeometryUtil.getPolygonBounds(child);
+          const childTol = Math.max(1.0, Math.max(childBounds.width, childBounds.height) * 0.015);
+          return simplifyPath(child, childTol).map(pt => ({ x: pt.x, y: pt.y, exact: pt.exact }));
+        });
+      }
+
+      poly.originalPoints = origPoly.map(pt => ({ x: pt.x, y: pt.y, exact: pt.exact }));
+      if (origPoly.children && origPoly.children.length > 0) {
+        poly.originalChildren = origPoly.children.map(child =>
+          child.map(pt => ({ x: pt.x, y: pt.y, exact: pt.exact }))
+        );
+      }
+
+      poly.partId = f.id;
+      poly.filename = f.file_name;
+      partsToNest.push(poly);
+    });
+  }
+
+  // Resolve candidate geometry
+  const candOrigPart = partsToNest.find(p => p.partId === candidate.partId) || partsToNest.find(p => p.filename === candidate.filename);
+  if (!candOrigPart) {
+    return { valid: false, reason: 'Part geometry not found' };
+  }
+
+  // Rotate & Translate Candidate
+  const candRotated = rotatePolygon(candOrigPart.originalPoints || candOrigPart, candidate.rotation);
+  const candShifted = shiftPolygon(candRotated, { x: candidate.x, y: candidate.y });
+
+  // 1. Validate Sheet Boundaries
+  const isOutside = hasMaterialOutsideSheet(candShifted, sheetPoly, config);
+  if (isOutside) {
+    return { valid: false, reason: 'outside_sheet' };
+  }
+
+  // 2. Validate Overlaps with placed parts
+  for (const placement of placements) {
+    if (placement.id === candidate.id) continue; // Skip candidate itself
+
+    const otherOrigPart = partsToNest.find(p => p.partId === placement.partId) || partsToNest.find(p => p.filename === placement.filename);
+    if (!otherOrigPart) continue;
+
+    const otherRotated = rotatePolygon(otherOrigPart.originalPoints || otherOrigPart, placement.rotation);
+    const otherShifted = shiftPolygon(otherRotated, { x: placement.x, y: placement.y });
+
+    const overlap = hasMaterialOverlap(candShifted, otherShifted, config);
+    if (overlap) {
+      return { valid: false, reason: 'collision' };
+    }
+  }
+
+  return { valid: true };
+};
+
 function calculateRealisticCuttingTime(materialType, thickness, partsToNest, placements) {
   const baseSpeeds = {
     'Mild Steel': 50,
@@ -1975,7 +2100,7 @@ function calculateRealisticCuttingTime(materialType, thickness, partsToNest, pla
 
     const placedPartsList = [];
     sheetPlacement.sheetplacements.forEach(p => {
-      const origPart = partsToNest.find(part => part.id === p.id);
+      const origPart = partsToNest.find(part => part.partId === p.partId) || partsToNest.find(part => part.id === p.id) || partsToNest.find(part => part.filename === p.filename);
       if (!origPart) return;
 
       const outerRotated = rotatePolygon(origPart.originalPoints || origPart, p.rotation);
@@ -2100,5 +2225,6 @@ module.exports = {
   runDeepnestNext,
   calculateFileArea,
   updateLayoutFiles,
-  calculateRealisticCuttingTime
+  calculateRealisticCuttingTime,
+  validatePlacement
 };
