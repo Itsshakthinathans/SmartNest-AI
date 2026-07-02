@@ -81,6 +81,22 @@ With interactive CAD pan-and-zoom previews, geometric centroid calculations, and
 * **Interactive Multi-Strategy Dashboard**: Switch layout views dynamically with layout selection tabs. Real-time metrics and estimated costs instantly sync to match the selected layout. Displays overall Average Response Time for all runs. Includes a **Layout Statistics Detail Table** in the bottom-right section showing all 13 metrics for the active layout.
 * **Export Integration**: Download center automatically packages and serves the layout-specific SVG and JSON files corresponding to the user's active choice.
 
+### 📐 8. Interactive CAD/CAM Manual Nesting Editor (New)
+* **Drag-and-Drop Editor Workspace**: Adjust and fine-tune part placements manually by entering **Manual Nest Adjustment** mode.
+* **Parts Library Sidebar**: Renders all uploaded geometries with file-extension filtering, search capabilities, and precise unplaced/placed quantity meters.
+* **60fps Bounding Box Pre-checks**: Live client-side visual indicators highlight containment:
+  * **Green Outline**: Candidate placement is safe and inside the sheet.
+  * **Red Outline**: Candidate placement is invalid (overlapping existing parts or sheet borders).
+* **Authoritative Collision Engine**: Leverages backend C++ Clipper routines to authorize final part drops, ensuring precision.
+* **Granular Controls & Keyboard Shortcuts**:
+  * **Scroll Wheel / Mouse Wheel**: Rotate candidate parts in 15° steps before placing.
+  * **`R` Key**: Rotate candidate parts by 90°.
+  * **`Escape` / Right-Click (Context Menu)**: Cancel placement preview mode.
+  * **`Delete` / `Backspace` / Trash Button**: Instantly delete the selected part from the active sheet layout.
+* **Layout State Undo/Redo & Save**:
+  * Step backward or forward through placement actions.
+  * Live status indicator chips (`● Unsaved Changes` vs `✓ Saved`) track dirty status states dynamically.
+
 ---
 
 ## 📂 Project Architecture
@@ -171,3 +187,10 @@ git checkout smartnest-v1-stable
 # Discard commits on your current branch and force-revert to stable state
 git reset --hard smartnest-v1-stable
 ```
+
+### Using the Older Version (Pre-Manual-Fill)
+To run the older version of the application before the CAD/CAM Manual Nesting features were implemented, checkout the previous stable commit:
+```bash
+git checkout 4eb68556e79485fd6d75f150f2ae1eee853a73f7
+```
+
