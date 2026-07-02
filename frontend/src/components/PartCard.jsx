@@ -1,5 +1,5 @@
-import React from 'react';
-import { Box, Typography, Card, Button, Chip, Stack } from '@mui/material';
+import React, { useState, useEffect } from 'react';
+import { Box, Typography, Card, Button, Chip, Stack, CircularProgress } from '@mui/material';
 import { Add as AddIcon, Check as CheckIcon, InfoOutlined as InfoIcon } from '@mui/icons-material';
 
 export default function PartCard({ part, isSelected, onSelect }) {
@@ -14,6 +14,90 @@ export default function PartCard({ part, isSelected, onSelect }) {
     width = 0,
     height = 0
   } = part;
+
+  const [svgContent, setSvgContent] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    const fetchSvg = async () => {
+      setLoading(true);
+      try {
+        const url = `http://localhost:5000/${filePath}.svg`;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('Network response was not ok');
+        const text = await response.text();
+        if (active) {
+          setSvgContent(text);
+        }
+      } catch (err) {
+        console.error('Failed to load SVG thumbnail:', err);
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    };
+    if (filePath) {
+      fetchSvg();
+    }
+    return () => {
+      active = false;
+    };
+  }, [filePath]);
+
+  const getModifiedSvg = () => {
+    if (!svgContent) return null;
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(svgContent, 'image/svg+xml');
+      const svgEl = doc.querySelector('svg');
+      if (!svgEl) return null;
+
+      // Fit layout bounds into thumbnail container and support flexible scale
+      svgEl.setAttribute('width', '100%');
+      svgEl.setAttribute('height', '100%');
+      svgEl.style.maxWidth = '100%';
+      svgEl.style.maxHeight = '100%';
+
+      // Calculate stroke-width relative to the geometry size (viewBox size)
+      const viewBoxStr = svgEl.getAttribute('viewBox');
+      let strokeWidthVal = '1.5';
+      if (viewBoxStr) {
+        const vbParts = viewBoxStr.trim().split(/\s+/).map(parseFloat);
+        if (vbParts.length === 4 && !vbParts.some(isNaN)) {
+          const w = vbParts[2];
+          const h = vbParts[3];
+          const maxDim = Math.max(w, h);
+          strokeWidthVal = String(Math.max(0.1, maxDim * 0.008));
+        }
+      }
+
+      // Modify paths style inside SVG to be bright and fill translucent teal
+      const paths = doc.querySelectorAll('path');
+      paths.forEach((path) => {
+        path.setAttribute('fill', 'rgba(13, 148, 136, 0.12)');
+        path.setAttribute('stroke', '#0d9488');
+        path.setAttribute('stroke-width', strokeWidthVal);
+        path.removeAttribute('style');
+      });
+
+      // Modify polygons style inside SVG just in case
+      const polygons = doc.querySelectorAll('polygon');
+      polygons.forEach((poly) => {
+        poly.setAttribute('fill', 'rgba(13, 148, 136, 0.12)');
+        poly.setAttribute('stroke', '#0d9488');
+        poly.setAttribute('stroke-width', strokeWidthVal);
+        poly.removeAttribute('style');
+      });
+
+      const serializer = new XMLSerializer();
+      return serializer.serializeToString(doc);
+    } catch (e) {
+      console.error('Error modifying SVG thumbnail:', e);
+      return null;
+    }
+  };
 
   const cleanName = fileName ? fileName.replace(/\.dxf$/i, '').replace(/\.svg$/i, '') : 'Unnamed Part';
   const formattedWidth = width ? parseFloat(width).toFixed(1) : 'N/A';
@@ -83,19 +167,24 @@ export default function PartCard({ part, isSelected, onSelect }) {
           position: 'relative'
         }}
       >
-        <img
-          src={`http://localhost:5000/${filePath}.svg`}
-          alt={fileName}
-          style={{
-            maxWidth: '100%',
-            maxHeight: '100%',
-            objectFit: 'contain',
-            filter: 'drop-shadow(0px 2px 4px rgba(0,0,0,0.5))'
-          }}
-          onError={(e) => {
-            e.target.style.display = 'none';
-          }}
-        />
+        {loading ? (
+          <CircularProgress size={20} sx={{ color: '#0d9488' }} />
+        ) : svgContent ? (
+          <div
+            style={{
+              width: '100%',
+              height: '100%',
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center'
+            }}
+            dangerouslySetInnerHTML={{ __html: getModifiedSvg() || svgContent }}
+          />
+        ) : (
+          <Typography variant="caption" sx={{ color: '#565f89' }}>
+            No Preview
+          </Typography>
+        )}
         
         {/* Status Badge */}
         <Chip
