@@ -7,6 +7,8 @@ import DashboardLayout from './layouts/DashboardLayout';
 import Dashboard from './pages/Dashboard';
 import Projects from './pages/Projects';
 import ProjectDetails from './pages/ProjectDetails';
+import ReviewNestJob from './pages/ReviewNestJob';
+import NestingProcessingDashboard from './pages/NestingProcessingDashboard';
 import Result from './pages/Result';
 import Remnants from './pages/Remnants';
 
@@ -110,6 +112,8 @@ function App() {
             <Route index element={<Dashboard />} />
             <Route path="projects" element={<Projects />} />
             <Route path="projects/:id" element={<ProjectDetails />} />
+            <Route path="projects/:id/review" element={<ReviewNestJob />} />
+            <Route path="results/:jobId/processing" element={<NestingProcessingDashboard />} />
             <Route path="results/:jobId" element={<Result />} />
             <Route path="remnants" element={<Remnants />} />
           </Route>

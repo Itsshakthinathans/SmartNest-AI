@@ -531,7 +531,7 @@ export default function Result() {
         setError('The nesting calculations encountered a geometry error and failed.');
         setRegenerating(false);
       } else {
-        pollTimerRef.current = setTimeout(pollStatus, 1500);
+        navigate(`/results/${jobId}/processing`);
       }
     } catch (err) {
       console.error('Error polling status:', err);

@@ -1160,7 +1160,7 @@ function evaluateIndividual(sheets, individual, config) {
 // 4. runDeepnestNext Service Implementation
 // ==========================================
 
-const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', sheetWidth = 1000, sheetHeight = 1000, strategy = 'single') => {
+const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', sheetWidth = 1000, sheetHeight = 1000, strategy = 'single', onProgress = null) => {
   prepareEnvironment();
   if (global.db && global.db.cache) {
     if (global.currentProjectId !== projectId) {
@@ -1175,6 +1175,9 @@ const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', s
   const partsToNest = [];
 
   for (const f of files) {
+    if (onProgress) {
+      onProgress(f.id, 'svg_conversion', 'Running');
+    }
     const absolutePath = path.join(__dirname, '..', f.file_path);
     console.log(`[NestingService] Processing file: ${f.file_name} at: ${absolutePath}`);
 
@@ -1285,6 +1288,9 @@ const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', s
 
     // Group polygons into a nested hierarchy (parents with internal hole child arrays)
     const filePolys = groupPolygonsByHierarchy(rawPolys);
+    if (onProgress) {
+      onProgress(f.id, 'polygon_extraction', 'Completed');
+    }
 
     // Replicate polygons according to quantity
     for (let q = 0; q < fileQty; q++) {
@@ -1339,6 +1345,10 @@ const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', s
 
   if (partsToNest.length === 0) {
     throw new Error('No valid geometric parts could be extracted from the project files.');
+  }
+
+  if (onProgress) {
+    onProgress(null, 'generating_layout_' + (strategy === 'a' ? '1' : strategy === 'b' ? '2' : strategy === 'c' ? '3' : '1'), 'Running');
   }
 
   console.log(`[NestingService] Nesting engine executing for ${partsToNest.length} total parts...`);
@@ -2221,8 +2231,60 @@ function calculateRealisticCuttingTime(materialType, thickness, partsToNest, pla
   return parseFloat(totalTime.toFixed(2));
 }
 
+const runDeepnestNextInWorker = (files, projectId, optimizationLevel, sheetWidth, sheetHeight, strategy, onProgress) => {
+  return new Promise((resolve, reject) => {
+    const { Worker } = require('worker_threads');
+    const workerPath = path.resolve(__dirname, '../workers/nestingWorker.js');
+    const worker = new Worker(workerPath, {
+      workerData: {
+        files,
+        projectId,
+        optimizationLevel,
+        sheetWidth,
+        sheetHeight,
+        strategy
+      }
+    });
+
+    let isTerminated = false;
+    const cleanupAndTerminate = () => {
+      if (!isTerminated) {
+        isTerminated = true;
+        worker.terminate().catch(err => console.error('[NestingWorker] Termination error:', err));
+      }
+    };
+
+    worker.on('message', (message) => {
+      if (message.type === 'progress') {
+        if (onProgress) {
+          onProgress(message.fileId, message.stage, message.status);
+        }
+      } else if (message.type === 'success') {
+        resolve(message.result);
+        cleanupAndTerminate();
+      } else if (message.type === 'error') {
+        reject(new Error(message.error));
+        cleanupAndTerminate();
+      }
+    });
+
+    worker.on('error', (err) => {
+      reject(err);
+      cleanupAndTerminate();
+    });
+
+    worker.on('exit', (code) => {
+      if (code !== 0) {
+        reject(new Error(`Worker stopped with exit code ${code}`));
+      }
+      cleanupAndTerminate();
+    });
+  });
+};
+
 module.exports = {
   runDeepnestNext,
+  runDeepnestNextInWorker,
   calculateFileArea,
   updateLayoutFiles,
   calculateRealisticCuttingTime,

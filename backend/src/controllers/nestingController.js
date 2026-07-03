@@ -2,6 +2,8 @@ const { pool } = require('../config/database');
 const nestingService = require('../services/nestingService');
 const costingService = require('../services/costingService');
 
+const activeJobsProgress = new Map();
+
 // Cutting time estimation helper
 const estimateCuttingTime = (materialType, thickness, totalPerimeter, contourCount, placements = []) => {
   const baseSpeeds = {
@@ -86,6 +88,13 @@ const calculateRemnantDimensions = (sheetWidth, sheetHeight, maxX, maxY) => {
 // Helper to run nesting in the background
 const runNestingInBackground = async (jobId, files, projectId, optimizationLevel, sheetWidth, sheetHeight, remnantId, isRegenerate = false, nestingMode = 'multi') => {
   try {
+    // Initialize in-memory progress registry
+    activeJobsProgress.set(parseInt(jobId, 10), {
+      currentStage: 'reading_dxf',
+      strategyStatus: { layout1: 'Waiting', layout2: 'Waiting', layout3: 'Waiting' },
+      partStatus: {}
+    });
+
     // Query project details for costing
     const projQuery = 'SELECT material_type, material_thickness FROM projects WHERE id = $1';
     const projRes = await pool.query(projQuery, [projectId]);
@@ -101,13 +110,39 @@ const runNestingInBackground = async (jobId, files, projectId, optimizationLevel
 
       for (const strat of strategies) {
         const stratStart = Date.now();
-        const result = await nestingService.runDeepnestNext(files, projectId, runLevel, sheetWidth, sheetHeight, strat);
+        const layoutKey = strat === 'a' ? 'layout1' : strat === 'b' ? 'layout2' : 'layout3';
+
+        const progress = activeJobsProgress.get(parseInt(jobId, 10));
+        if (progress) {
+          progress.currentStage = `generating_layout_${strat === 'a' ? 1 : strat === 'b' ? 2 : 3}`;
+          progress.strategyStatus[layoutKey] = 'Running';
+          for (const f of files) {
+            if (!progress.partStatus[f.id]) {
+              progress.partStatus[f.id] = { layout1: 'Waiting', layout2: 'Waiting', layout3: 'Waiting' };
+            }
+          }
+        }
+
+        const onProgress = (fileId, stage, status) => {
+          console.log(`[Nesting Job #${jobId}] Strategy ${layoutKey} Progress - File ID: ${fileId || 'System'}, Stage: ${stage}, Status: ${status}`);
+          const currentProgress = activeJobsProgress.get(parseInt(jobId, 10));
+          if (currentProgress) {
+            currentProgress.currentStage = stage;
+            if (!currentProgress.partStatus[fileId]) {
+              currentProgress.partStatus[fileId] = { layout1: 'Waiting', layout2: 'Waiting', layout3: 'Waiting' };
+            }
+            currentProgress.partStatus[fileId][layoutKey] = status;
+          }
+        };
+
+        const result = await nestingService.runDeepnestNextInWorker(files, projectId, runLevel, sheetWidth, sheetHeight, strat, onProgress);
         const stratRuntime = Date.now() - stratStart;
 
         const cost = costingService.calculateCost(materialType, thickness, sheetWidth, sheetHeight, result.utilization);
         const largestRemnantWidth = result.largestRemnantWidth;
         const largestRemnantHeight = result.largestRemnantHeight;
-        const largestRemnantArea = result.largestRemnantArea;        const stratRemnantValue = calculateRemnantValue(materialType, thickness, largestRemnantArea);
+        const largestRemnantArea = result.largestRemnantArea;
+        const stratRemnantValue = calculateRemnantValue(materialType, thickness, largestRemnantArea);
         const cuttingTime = result.estimatedCuttingTime || 0.00;
 
         strategyResults[`strategy_${strat}`] = {
@@ -129,11 +164,29 @@ const runNestingInBackground = async (jobId, files, projectId, optimizationLevel
           maxY: result.maxY,
           applied: (strat === 'a')
         };
+
+        if (progress) {
+          progress.strategyStatus[layoutKey] = 'Completed';
+          for (const f of files) {
+            if (progress.partStatus[f.id]) {
+              progress.partStatus[f.id][layoutKey] = 'Completed';
+            }
+          }
+        }
+      }
+
+      const progress = activeJobsProgress.get(parseInt(jobId, 10));
+      if (progress) {
+        progress.currentStage = 'selecting_best';
       }
 
       // Initialize active layout as Strategy A
       const defaultStrat = strategyResults.strategy_a;
       const defaultCost = costingService.calculateCost(materialType, thickness, sheetWidth, sheetHeight, defaultStrat.utilization);
+
+      if (progress) {
+        progress.currentStage = 'preparing_stats';
+      }
 
       const query = `
         UPDATE nest_jobs
@@ -207,9 +260,42 @@ const runNestingInBackground = async (jobId, files, projectId, optimizationLevel
 
     } else {
       const runStart = Date.now();
-      const result = await nestingService.runDeepnestNext(files, projectId, optimizationLevel, sheetWidth, sheetHeight, 'single');
+      const progress = activeJobsProgress.get(parseInt(jobId, 10));
+      if (progress) {
+        progress.currentStage = 'generating_layout_1';
+        progress.strategyStatus.layout1 = 'Running';
+        for (const f of files) {
+          progress.partStatus[f.id] = { layout1: 'Waiting', layout2: 'Waiting', layout3: 'Waiting' };
+        }
+      }
+
+      const onProgress = (fileId, stage, status) => {
+        console.log(`[Nesting Job #${jobId}] Progress - File ID: ${fileId || 'System'}, Stage: ${stage}, Status: ${status}`);
+        const currentProgress = activeJobsProgress.get(parseInt(jobId, 10));
+        if (currentProgress) {
+          currentProgress.currentStage = stage;
+          if (!currentProgress.partStatus[fileId]) {
+            currentProgress.partStatus[fileId] = { layout1: 'Waiting', layout2: 'Waiting', layout3: 'Waiting' };
+          }
+          currentProgress.partStatus[fileId].layout1 = status;
+        }
+      };
+
+      const result = await nestingService.runDeepnestNextInWorker(files, projectId, optimizationLevel, sheetWidth, sheetHeight, 'single', onProgress);
       const stratRuntime = Date.now() - runStart;
-      const cost = costingService.calculateCost(materialType, thickness, sheetWidth, sheetHeight, result.utilization);      const cuttingTime = result.estimatedCuttingTime || 0.00;
+
+      if (progress) {
+        progress.strategyStatus.layout1 = 'Completed';
+        for (const f of files) {
+          if (progress.partStatus[f.id]) {
+            progress.partStatus[f.id].layout1 = 'Completed';
+          }
+        }
+        progress.currentStage = 'preparing_stats';
+      }
+
+      const cost = costingService.calculateCost(materialType, thickness, sheetWidth, sheetHeight, result.utilization);
+      const cuttingTime = result.estimatedCuttingTime || 0.00;
 
       const query = `
         UPDATE nest_jobs
@@ -279,9 +365,11 @@ const runNestingInBackground = async (jobId, files, projectId, optimizationLevel
       if (remnantId) {
         await pool.query('UPDATE remnants SET used = true WHERE id = $1', [remnantId]);
       }
+      activeJobsProgress.delete(parseInt(jobId, 10));
       console.log(`[NestingController] Job ID ${jobId} completed and remnant stored successfully.`);
     }
   } catch (err) {
+    activeJobsProgress.delete(parseInt(jobId, 10));
     console.error(`[NestingController] Job ID ${jobId} nesting calculation failed:`, err.stack || err.message);
     const query = `
       UPDATE nest_jobs
@@ -372,9 +460,42 @@ const startNestingJob = async (req, res) => {
 // 2. Get Job Status
 const getJobStatus = async (req, res) => {
   const { jobId } = req.params;
+  const progressOnly = req.query.progressOnly === 'true';
 
   try {
-    const query = 'SELECT id, status FROM nest_jobs WHERE id = $1';
+    if (progressOnly) {
+      const statusQuery = 'SELECT status FROM nest_jobs WHERE id = $1';
+      const statusResult = await pool.query(statusQuery, [jobId]);
+      if (statusResult.rows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: `Nesting Job with ID ${jobId} not found`
+        });
+      }
+      const jobStatus = statusResult.rows[0].status;
+      const responseData = { status: jobStatus };
+
+      if (jobStatus === 'processing' || jobStatus === 'pending') {
+        const progress = activeJobsProgress.get(parseInt(jobId, 10));
+        if (progress) {
+          responseData.currentStage = progress.currentStage;
+          responseData.strategyStatus = progress.strategyStatus;
+          responseData.partStatus = progress.partStatus;
+        } else {
+          responseData.currentStage = 'generating_layout_1';
+          responseData.strategyStatus = { layout1: 'Waiting', layout2: 'Waiting', layout3: 'Waiting' };
+          responseData.partStatus = {};
+        }
+      }
+      return res.status(200).json(responseData);
+    }
+
+    const query = `
+      SELECT j.id, j.project_id, j.status, j.optimization_level, j.total_parts, j.input_file_count, j.sheet_width, j.sheet_height, p.project_name
+      FROM nest_jobs j
+      LEFT JOIN projects p ON j.project_id = p.id
+      WHERE j.id = $1
+    `;
     const result = await pool.query(query, [jobId]);
 
     if (result.rows.length === 0) {
@@ -385,10 +506,33 @@ const getJobStatus = async (req, res) => {
     }
 
     const job = result.rows[0];
-    return res.status(200).json({
+    const responseData = {
       jobId: job.id,
-      status: job.status
-    });
+      projectId: job.project_id,
+      status: job.status,
+      projectName: job.project_name,
+      optimizationLevel: job.optimization_level,
+      totalParts: job.total_parts,
+      inputFileCount: job.input_file_count,
+      sheetWidth: job.sheet_width,
+      sheetHeight: job.sheet_height
+    };
+
+    // If active, enrich with live progress metrics from in-memory map
+    if (job.status === 'processing' || job.status === 'pending') {
+      const progress = activeJobsProgress.get(parseInt(jobId, 10));
+      if (progress) {
+        responseData.currentStage = progress.currentStage;
+        responseData.strategyStatus = progress.strategyStatus;
+        responseData.partStatus = progress.partStatus;
+      } else {
+        responseData.currentStage = 'generating_layout_1';
+        responseData.strategyStatus = { layout1: 'Waiting', layout2: 'Waiting', layout3: 'Waiting' };
+        responseData.partStatus = {};
+      }
+    }
+
+    return res.status(200).json(responseData);
 
   } catch (err) {
     console.error('Error in getJobStatus:', err.message);

@@ -23,6 +23,7 @@ import {
 } from '@mui/material';
 import {
   ArrowBack as BackIcon,
+  ArrowForward as NextIcon,
   Delete as DeleteIcon,
   CloudUpload as UploadIcon,
   PlayArrow as StartIcon,
@@ -44,12 +45,27 @@ export default function ProjectDetails() {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState(null);
 
+  // Helper to load config from sessionStorage or default
+  const getSavedConfigValue = (key, fallback) => {
+    try {
+      const saved = sessionStorage.getItem(`project_config_${id}`);
+      if (saved) {
+        const config = JSON.parse(saved);
+        if (config[key] !== undefined) {
+          return config[key];
+        }
+      }
+    } catch (e) {
+      console.error('Error loading config from sessionStorage:', e);
+    }
+    return fallback;
+  };
+
   // Nest trigger state
-  const [nestingTriggered, setNestingTriggered] = useState(false);
-  const [optimizationLevel, setOptimizationLevel] = useState('greedy');
-  const [sheetSizePreset, setSheetSizePreset] = useState('1000x1000');
-  const [customWidth, setCustomWidth] = useState(1000);
-  const [customHeight, setCustomHeight] = useState(1000);
+  const [optimizationLevel, setOptimizationLevel] = useState(() => getSavedConfigValue('optimizationLevel', 'greedy'));
+  const [sheetSizePreset, setSheetSizePreset] = useState(() => getSavedConfigValue('sheetSizePreset', '1000x1000'));
+  const [customWidth, setCustomWidth] = useState(() => getSavedConfigValue('customWidth', 1000));
+  const [customHeight, setCustomHeight] = useState(() => getSavedConfigValue('customHeight', 1000));
 
   // Material Management state
   const [materialType, setMaterialType] = useState('Mild Steel');
@@ -58,11 +74,23 @@ export default function ProjectDetails() {
   // Remnant Recommendations state
   const [recommendations, setRecommendations] = useState([]);
   const [recLoading, setRecLoading] = useState(false);
-  const [selectedRemnant, setSelectedRemnant] = useState(null);
+  const [selectedRemnant, setSelectedRemnant] = useState(() => getSavedConfigValue('selectedRemnant', null));
 
   useEffect(() => {
     fetchProjectData();
   }, [id]);
+
+  useEffect(() => {
+    if (id) {
+      sessionStorage.setItem(`project_config_${id}`, JSON.stringify({
+        optimizationLevel,
+        sheetSizePreset,
+        customWidth,
+        customHeight,
+        selectedRemnant
+      }));
+    }
+  }, [id, optimizationLevel, sheetSizePreset, customWidth, customHeight, selectedRemnant]);
 
   const formatCurrency = (val) => {
     return new Intl.NumberFormat('en-IN', {
@@ -212,34 +240,9 @@ export default function ProjectDetails() {
     }
   };
 
-  const handleStartNesting = async () => {
+  const handleNext = () => {
     if (files.length === 0) return;
-
-    let width = 1000;
-    let height = 1000;
-
-    if (selectedRemnant) {
-      width = selectedRemnant.remaining_width;
-      height = selectedRemnant.remaining_height;
-    } else if (sheetSizePreset === 'custom') {
-      width = parseInt(customWidth, 10) || 1000;
-      height = parseInt(customHeight, 10) || 1000;
-    } else {
-      const [w, h] = sheetSizePreset.split('x').map(Number);
-      width = w;
-      height = h;
-    }
-
-    try {
-      setNestingTriggered(true);
-      const response = await api.startNestingJob(id, optimizationLevel, width, height, selectedRemnant?.id);
-      // Success returns jobId and status
-      navigate(`/results/${response.jobId}`);
-    } catch (err) {
-      console.error('Error starting nesting job:', err);
-      alert('Failed to trigger nesting run: ' + (err.response?.data?.message || err.message));
-      setNestingTriggered(false);
-    }
+    navigate(`/projects/${id}/review`);
   };
 
   if (loading) {
@@ -523,9 +526,9 @@ export default function ProjectDetails() {
 
               <Button
                 variant="contained"
-                disabled={files.length === 0 || nestingTriggered}
-                onClick={handleStartNesting}
-                startIcon={nestingTriggered ? <CircularProgress size={20} color="inherit" /> : <StartIcon />}
+                disabled={files.length === 0}
+                onClick={handleNext}
+                startIcon={<NextIcon />}
                 sx={{
                   background: 'linear-gradient(135deg, #0d9488 0%, #06b6d4 100%)',
                   color: '#ffffff',
@@ -545,7 +548,7 @@ export default function ProjectDetails() {
                   },
                 }}
               >
-                {nestingTriggered ? 'Starting Job...' : 'Generate Nest'}
+                Next
               </Button>
               {files.length === 0 && (
                 <Typography variant="caption" display="block" sx={{ color: '#f7768e', mt: 1, fontWeight: '700' }}>

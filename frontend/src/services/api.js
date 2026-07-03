@@ -81,8 +81,10 @@ export const api = {
     const response = await apiClient.post(`/nesting/start/${projectId}`, { optimizationLevel, sheetWidth, sheetHeight, remnantId, nestingMode });
     return response.data;
   },
-  getJobStatus: async (jobId) => {
-    const response = await apiClient.get(`/nesting/status/${jobId}`);
+  getJobStatus: async (jobId, progressOnly = false) => {
+    const response = await apiClient.get(`/nesting/status/${jobId}`, {
+      params: progressOnly ? { progressOnly: true } : {}
+    });
     return response.data;
   },
   getJobResult: async (jobId) => {
