@@ -29,6 +29,14 @@ export const api = {
     });
     return response.data;
   },
+  createProjectFromRemnant: async (remnantId, projectName = null, description = null) => {
+    const response = await apiClient.post('/projects/create-from-remnant', {
+      remnantId,
+      project_name: projectName,
+      description
+    });
+    return response.data;
+  },
   deleteProject: async (id) => {
     const response = await apiClient.delete(`/projects/${id}`);
     return response.data;
@@ -99,6 +107,14 @@ export const api = {
   },
   recommendRemnants: async (projectId) => {
     const response = await apiClient.get(`/remnants/recommend/${projectId}`);
+    return response.data;
+  },
+  getRemnant: async (id) => {
+    const response = await apiClient.get(`/remnants/${id}`);
+    return response.data;
+  },
+  checkPreNestSuitability: async (projectId, payload) => {
+    const response = await apiClient.post(`/remnants/pre-nest/${projectId}`, payload);
     return response.data;
   },
 

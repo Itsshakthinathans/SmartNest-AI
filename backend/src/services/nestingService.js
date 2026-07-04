@@ -68,9 +68,119 @@ function findLargestEmptyRectangle(sheetWidth, sheetHeight, obstacles) {
   }
   
   return {
+    x1: Math.round(bestRect.x1),
+    y1: Math.round(bestRect.y1),
+    x2: Math.round(bestRect.x2),
+    y2: Math.round(bestRect.y2),
     width: Math.round(bestRect.x2 - bestRect.x1),
     height: Math.round(bestRect.y2 - bestRect.y1),
     area: Math.round(maxArea)
+  };
+}
+
+function pointInPolygon(point, polygon) {
+  const x = point.x, y = point.y;
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].x, yi = polygon[i].y;
+    const xj = polygon[j].x, yj = polygon[j].y;
+    const intersect = ((yi > y) !== (yj > y))
+        && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function findLargestRectangleInLeftover(sheetWidth, sheetHeight, leftoverRegion, placedPartObstacles) {
+  const outerPolygon = leftoverRegion.outer || [];
+  const holes = leftoverRegion.holes || [];
+  
+  const obstacles = [...placedPartObstacles];
+  
+  // 1. Add holes as obstacles
+  holes.forEach(hole => {
+    let minHX = Infinity, maxHX = -Infinity, minHY = Infinity, maxHY = -Infinity;
+    hole.forEach(pt => {
+      if (pt.x < minHX) minHX = pt.x;
+      if (pt.x > maxHX) maxHX = pt.x;
+      if (pt.y < minHY) minHY = pt.y;
+      if (pt.y > maxHY) maxHY = pt.y;
+    });
+    if (minHX < maxHX && minHY < maxHY) {
+      obstacles.push({ minX: minHX, minY: minHY, maxX: maxHX, maxY: maxHY });
+    }
+  });
+  
+  // 2. Add complement of outer polygon as obstacles (using grid-based decomposition)
+  const gridSize = 25; // 25mm grid resolution
+  const cols = Math.ceil(sheetWidth / gridSize);
+  const rows = Math.ceil(sheetHeight / gridSize);
+  
+  for (let c = 0; c < cols; c++) {
+    const x1 = c * gridSize;
+    const x2 = Math.min(sheetWidth, (c + 1) * gridSize);
+    
+    for (let r = 0; r < rows; r++) {
+      const y1 = r * gridSize;
+      const y2 = Math.min(sheetHeight, (r + 1) * gridSize);
+      
+      const cx = (x1 + x2) / 2;
+      const cy = (y1 + y2) / 2;
+      
+      const corners = [
+        { x: x1, y: y1 },
+        { x: x2, y: y1 },
+        { x: x2, y: y2 },
+        { x: x1, y: y2 },
+        { x: cx, y: cy }
+      ];
+      
+      const isOutside = corners.some(pt => !pointInPolygon(pt, outerPolygon));
+      if (isOutside) {
+        obstacles.push({ minX: x1, minY: y1, maxX: x2, maxY: y2 });
+      }
+    }
+  }
+  
+  // 3. Solve Maximum Empty Rectangle
+  const rect = findLargestEmptyRectangle(sheetWidth, sheetHeight, obstacles);
+  
+  // 4. Shrink/contract by 1mm iteratively if it overflows outer boundaries (safety containment check)
+  let bestX1 = rect.x1;
+  let bestY1 = rect.y1;
+  let bestX2 = rect.x2;
+  let bestY2 = rect.y2;
+  
+  const sampleCheck = () => {
+    const midX = (bestX1 + bestX2) / 2;
+    const midY = (bestY1 + bestY2) / 2;
+    const testPoints = [
+      { x: bestX1 + 0.1, y: bestY1 + 0.1 },
+      { x: bestX2 - 0.1, y: bestY1 + 0.1 },
+      { x: bestX2 - 0.1, y: bestY2 - 0.1 },
+      { x: bestX1 + 0.1, y: bestY2 - 0.1 },
+      { x: midX, y: midY }
+    ];
+    return testPoints.every(pt => pointInPolygon(pt, outerPolygon));
+  };
+  
+  let attempts = 0;
+  while (!sampleCheck() && attempts < 15) {
+    bestX1 += 1;
+    bestY1 += 1;
+    bestX2 -= 1;
+    bestY2 -= 1;
+    attempts++;
+  }
+  
+  return {
+    x1: bestX1,
+    y1: bestY1,
+    x2: bestX2,
+    y2: bestY2,
+    width: Math.max(0, bestX2 - bestX1),
+    height: Math.max(0, bestY2 - bestY1),
+    area: Math.max(0, (bestX2 - bestX1) * (bestY2 - bestY1))
   };
 }
 
@@ -108,6 +218,9 @@ function prepareEnvironment() {
   const clipperCode = fs.readFileSync('E:/smartnest-ai/ai-service/deepnest-next/main/util/clipper.js', 'utf8');
   const clipperFn = new Function('root', clipperCode + '; return root.ClipperLib || ClipperLib;');
   global.ClipperLib = clipperFn(global);
+  if (global.ClipperLib && global.ClipperLib.Clipper) {
+    global.ClipperLib.Clipper.prototype.ParseFirstLeft = global.ClipperLib.Clipper.ParseFirstLeft;
+  }
 
   const geometryutilCode = fs.readFileSync('E:/smartnest-ai/ai-service/deepnest-next/main/util/geometryutil.js', 'utf8');
   const geomFn = new Function('root', geometryutilCode + '; return root.GeometryUtil || GeometryUtil;');
@@ -1160,7 +1273,7 @@ function evaluateIndividual(sheets, individual, config) {
 // 4. runDeepnestNext Service Implementation
 // ==========================================
 
-const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', sheetWidth = 1000, sheetHeight = 1000, strategy = 'single', onProgress = null) => {
+const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', sheetWidth = 1000, sheetHeight = 1000, strategy = 'single', onProgress = null, remnantId = null) => {
   prepareEnvironment();
   if (global.db && global.db.cache) {
     if (global.currentProjectId !== projectId) {
@@ -1353,13 +1466,33 @@ const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', s
 
   console.log(`[NestingService] Nesting engine executing for ${partsToNest.length} total parts...`);
 
-  // Sheet dimensions are passed as parameters (sheetWidth x sheetHeight)
-  const sheet = [
-    { x: 0, y: 0 },
-    { x: sheetWidth, y: 0 },
-    { x: sheetWidth, y: sheetHeight },
-    { x: 0, y: sheetHeight }
-  ];
+  // Sheet dimensions or custom remnant geometry
+  let sheet = null;
+  if (remnantId) {
+    try {
+      const { pool } = require('../config/database');
+      const remnantRes = await pool.query('SELECT geometry FROM remnants WHERE id = $1', [remnantId]);
+      if (remnantRes.rows.length > 0 && remnantRes.rows[0].geometry) {
+        const geom = remnantRes.rows[0].geometry;
+        sheet = geom.outer.map(pt => ({ x: pt.x, y: pt.y }));
+        sheet.children = (geom.holes || []).map(hole => hole.map(pt => ({ x: pt.x, y: pt.y })));
+        console.log(`[NestingService] Loaded custom remnant stock polygon with ${sheet.length} points and ${sheet.children.length} holes.`);
+      }
+    } catch (dbErr) {
+      console.error('[NestingService] Failed to load remnant geometry, falling back to rectangular sheet:', dbErr.message);
+    }
+  }
+
+  if (!sheet) {
+    sheet = [
+      { x: 0, y: 0 },
+      { x: sheetWidth, y: 0 },
+      { x: sheetWidth, y: sheetHeight },
+      { x: 0, y: sheetHeight }
+    ];
+    sheet.children = [];
+  }
+
   sheet.source = 0;
   sheet.id = 0;
 
@@ -1600,6 +1733,9 @@ const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', s
 
   const cuttingTime = calculateRealisticCuttingTime(materialType, thickness, partsToNest, result.placements);
 
+  // Perform leftover extraction post-nesting
+  const leftoverRegions = extractLeftoverGeometry(sheet, result.placements[0]?.sheetplacements || [], partsToNest, config.clipperScale);
+
   return {
     utilization: parseFloat(result.utilisation.toFixed(2)),
     outputSvg: outputSvgRelativePath,
@@ -1614,7 +1750,8 @@ const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', s
     totalPerimeter,
     contourCount,
     placements: result.placements,
-    estimatedCuttingTime: cuttingTime
+    estimatedCuttingTime: cuttingTime,
+    leftoverRegions
   };
 };
 
@@ -1739,6 +1876,30 @@ const updateLayoutFiles = async (jobId, projectFiles, placements, strategy = nul
   const sheetWidth = job.sheet_width;
   const sheetHeight = job.sheet_height;
   const projectId = job.project_id;
+
+  let sheet = null;
+  if (job.remnant_id) {
+    try {
+      const remnantRes = await pool.query('SELECT geometry FROM remnants WHERE id = $1', [job.remnant_id]);
+      if (remnantRes.rows.length > 0 && remnantRes.rows[0].geometry) {
+        const geom = remnantRes.rows[0].geometry;
+        sheet = geom.outer.map(pt => ({ x: pt.x, y: pt.y }));
+        sheet.children = (geom.holes || []).map(hole => hole.map(pt => ({ x: pt.x, y: pt.y })));
+      }
+    } catch (dbErr) {
+      console.error('[NestingService] Failed to load remnant geometry in updateLayoutFiles:', dbErr.message);
+    }
+  }
+
+  if (!sheet) {
+    sheet = [
+      { x: 0, y: 0 },
+      { x: sheetWidth, y: 0 },
+      { x: sheetWidth, y: sheetHeight },
+      { x: 0, y: sheetHeight }
+    ];
+    sheet.children = [];
+  }
 
   // 2. Build partsToNest from projectFiles (using the cached SVG files)
   const partsToNest = [];
@@ -1949,12 +2110,16 @@ const updateLayoutFiles = async (jobId, projectFiles, placements, strategy = nul
   fs.writeFileSync(jsonOutPath, JSON.stringify(result, null, 2));
 
   console.log(`[NestingService] Layout files updated for Job ID ${jobId} (Strategy: ${strategy || 'active'}).`);
+  // Perform leftover extraction post manual adjustments saving
+  const leftoverRegions = extractLeftoverGeometry(sheet, sheetplacements, partsToNest, 10000000);
+
   return { 
     maxX: Math.round(maxX), 
     maxY: Math.round(maxY),
     largestRemnantWidth: remnant.width,
     largestRemnantHeight: remnant.height,
-    largestRemnantArea: remnant.area
+    largestRemnantArea: remnant.area,
+    leftoverRegions
   };
 };
 
@@ -2231,7 +2396,7 @@ function calculateRealisticCuttingTime(materialType, thickness, partsToNest, pla
   return parseFloat(totalTime.toFixed(2));
 }
 
-const runDeepnestNextInWorker = (files, projectId, optimizationLevel, sheetWidth, sheetHeight, strategy, onProgress) => {
+const runDeepnestNextInWorker = (files, projectId, optimizationLevel, sheetWidth, sheetHeight, strategy, onProgress, remnantId = null) => {
   return new Promise((resolve, reject) => {
     const { Worker } = require('worker_threads');
     const workerPath = path.resolve(__dirname, '../workers/nestingWorker.js');
@@ -2242,7 +2407,8 @@ const runDeepnestNextInWorker = (files, projectId, optimizationLevel, sheetWidth
         optimizationLevel,
         sheetWidth,
         sheetHeight,
-        strategy
+        strategy,
+        remnantId
       }
     });
 
@@ -2282,11 +2448,226 @@ const runDeepnestNextInWorker = (files, projectId, optimizationLevel, sheetWidth
   });
 };
 
+function extractLeftoverGeometry(sheet, placements, partsToNest, scale = 10000000) {
+  if (!global.ClipperLib || !global.GeometryUtil) {
+    prepareEnvironment();
+  }
+  const clipper = new ClipperLib.Clipper();
+
+  // Add Subject (Sheet)
+  const clipperSheet = sheet.map(pt => ({ X: Math.round(pt.x * scale), Y: Math.round(pt.y * scale) }));
+  clipper.AddPath(clipperSheet, ClipperLib.PolyType.ptSubject, true);
+  
+  if (sheet.children && sheet.children.length > 0) {
+    sheet.children.forEach(child => {
+      const clipperHole = child.map(pt => ({ X: Math.round(pt.x * scale), Y: Math.round(pt.y * scale) }));
+      clipper.AddPath(clipperHole, ClipperLib.PolyType.ptSubject, true);
+    });
+  }
+
+  // Add Clip (Placed Parts)
+  placements.forEach(placement => {
+    const origPart = partsToNest.find(p => p.partId === placement.partId) || 
+                     partsToNest.find(p => p.id === placement.id) || 
+                     partsToNest.find(p => p.filename === placement.filename);
+    if (origPart) {
+      const renderOuter = rotatePolygon(origPart.originalPoints || origPart, placement.rotation);
+      const localShiftedOuter = shiftPolygon(renderOuter, placement);
+      const clipperOuter = localShiftedOuter.map(pt => ({ X: Math.round(pt.x * scale), Y: Math.round(pt.y * scale) }));
+      clipper.AddPath(clipperOuter, ClipperLib.PolyType.ptClip, true);
+    }
+  });
+
+  const polyTree = new ClipperLib.PolyTree();
+  clipper.Execute(
+    ClipperLib.ClipType.ctDifference,
+    polyTree,
+    ClipperLib.PolyFillType.pftEvenOdd,
+    ClipperLib.PolyFillType.pftEvenOdd
+  );
+
+  const leftoverRegions = [];
+  
+  function traverseTree(node, parentRegion) {
+    const childNodes = node.Childs();
+    for (let i = 0; i < childNodes.length; i++) {
+      const childNode = childNodes[i];
+      const isOpen = typeof childNode.IsOpen === 'function' ? childNode.IsOpen() : childNode.IsOpen;
+      if (isOpen) continue;
+
+      const path = typeof childNode.Polygon === 'function' ? childNode.Polygon() : (childNode.m_polygon || childNode.Polygon);
+      if (!path || path.length < 3) continue;
+
+      const poly = path.map(pt => ({ x: pt.X / scale, y: pt.Y / scale }));
+      const isHole = typeof childNode.IsHole === 'function' ? childNode.IsHole() : childNode.IsHole;
+      
+      if (isHole) {
+        if (parentRegion) {
+          if (!parentRegion.holes) parentRegion.holes = [];
+          parentRegion.holes.push(poly);
+        }
+        traverseTree(childNode, null);
+      } else {
+        const region = {
+          outer: poly,
+          holes: []
+        };
+        leftoverRegions.push(region);
+        traverseTree(childNode, region);
+      }
+    }
+  }
+
+  traverseTree(polyTree, null);
+
+  const placedPartObstacles = [];
+  placements.forEach(placement => {
+    const origPart = partsToNest.find(p => p.partId === placement.partId) || 
+                     partsToNest.find(p => p.id === placement.id) || 
+                     partsToNest.find(p => p.filename === placement.filename);
+    if (origPart) {
+      const renderOuter = rotatePolygon(origPart.originalPoints || origPart, placement.rotation);
+      const localShiftedOuter = shiftPolygon(renderOuter, placement);
+      
+      let minPX = Infinity, maxPX = -Infinity, minPY = Infinity, maxPY = -Infinity;
+      localShiftedOuter.forEach(pt => {
+        if (pt.x < minPX) minPX = pt.x;
+        if (pt.x > maxPX) maxPX = pt.x;
+        if (pt.y < minPY) minPY = pt.y;
+        if (pt.y > maxPY) maxPY = pt.y;
+      });
+      placedPartObstacles.push({ minX: minPX, minY: minPY, maxX: maxPX, maxY: maxPY });
+    }
+  });
+  
+  let sheetWidth = 0, sheetHeight = 0;
+  sheet.forEach(pt => {
+    if (pt.x > sheetWidth) sheetWidth = pt.x;
+    if (pt.y > sheetHeight) sheetHeight = pt.y;
+  });
+  if (sheetWidth <= 0) sheetWidth = 1000;
+  if (sheetHeight <= 0) sheetHeight = 1000;
+
+  // Calculate bounding dims & area
+  leftoverRegions.forEach(region => {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    region.outer.forEach(pt => {
+      if (pt.x < minX) minX = pt.x;
+      if (pt.x > maxX) maxX = pt.x;
+      if (pt.y < minY) minY = pt.y;
+      if (pt.y > maxY) maxY = pt.y;
+    });
+    
+    region.width = Math.round(maxX - minX);
+    region.height = Math.round(maxY - minY);
+    
+    let area = Math.abs(GeometryUtil.polygonArea(region.outer));
+    if (region.holes && region.holes.length > 0) {
+      region.holes.forEach(hole => {
+        area -= Math.abs(GeometryUtil.polygonArea(hole));
+      });
+    }
+    region.area = Math.round(area);
+
+    region.usableRectangle = findLargestRectangleInLeftover(sheetWidth, sheetHeight, region, placedPartObstacles);
+    
+    // Compute Scrap geometry using Clipper Lib difference
+    const scrapPieces = [];
+    const hasValidRect = region.usableRectangle && region.usableRectangle.area >= 5000 && region.usableRectangle.width >= 50 && region.usableRectangle.height >= 50;
+    
+    if (hasValidRect) {
+      try {
+        const clipper = new ClipperLib.Clipper();
+        const clipperSheet = region.outer.map(pt => ({ X: Math.round(pt.x * scale), Y: Math.round(pt.y * scale) }));
+        clipper.AddPath(clipperSheet, ClipperLib.PolyType.ptSubject, true);
+        if (region.holes && region.holes.length > 0) {
+          region.holes.forEach(hole => {
+            const clipperHole = hole.map(pt => ({ X: Math.round(pt.x * scale), Y: Math.round(pt.y * scale) }));
+            clipper.AddPath(clipperHole, ClipperLib.PolyType.ptSubject, true);
+          });
+        }
+        
+        const rect = region.usableRectangle;
+        const rectOuterScale = [
+          { X: Math.round(rect.x1 * scale), Y: Math.round(rect.y1 * scale) },
+          { X: Math.round(rect.x2 * scale), Y: Math.round(rect.y1 * scale) },
+          { X: Math.round(rect.x2 * scale), Y: Math.round(rect.y2 * scale) },
+          { X: Math.round(rect.x1 * scale), Y: Math.round(rect.y2 * scale) }
+        ];
+        clipper.AddPath(rectOuterScale, ClipperLib.PolyType.ptClip, true);
+        
+        const solutionPaths = new ClipperLib.Paths();
+        clipper.Execute(
+          ClipperLib.ClipType.ctDifference,
+          solutionPaths,
+          ClipperLib.PolyFillType.pftEvenOdd,
+          ClipperLib.PolyFillType.pftEvenOdd
+        );
+        
+        const unionClipper = new ClipperLib.Clipper();
+        unionClipper.AddPaths(solutionPaths, ClipperLib.PolyType.ptSubject, true);
+        const polyTree = new ClipperLib.PolyTree();
+        unionClipper.Execute(ClipperLib.ClipType.ctUnion, polyTree, ClipperLib.PolyFillType.pftEvenOdd, ClipperLib.PolyFillType.pftEvenOdd);
+        
+        const traverseScrapTree = (node, parentPiece) => {
+          const childNodes = node.Childs();
+          for (let i = 0; i < childNodes.length; i++) {
+            const childNode = childNodes[i];
+            const isOpen = childNode.IsOpen;
+            if (isOpen) continue;
+            
+            const path = childNode.m_polygon || childNode.Polygon;
+            if (!path || path.length < 3) continue;
+            
+            const poly = path.map(pt => ({ x: pt.X / scale, y: pt.Y / scale }));
+            const isHole = childNode.IsHole;
+            
+            if (isHole) {
+              if (parentPiece) {
+                if (!parentPiece.holes) parentPiece.holes = [];
+                parentPiece.holes.push(poly);
+              }
+              traverseScrapTree(childNode, null);
+            } else {
+              let minPX = Infinity, maxPX = -Infinity, minPY = Infinity, maxPY = -Infinity;
+              poly.forEach(pt => {
+                if (pt.x < minPX) minPX = pt.x;
+                if (pt.x > maxPX) maxPX = pt.x;
+                if (pt.y < minPY) minPY = pt.y;
+                if (pt.y > maxPY) maxPY = pt.y;
+              });
+              
+              const piece = {
+                outer: poly,
+                holes: [],
+                width: Math.round(maxPX - minPX),
+                height: Math.round(maxPY - minPY),
+                area: Math.round(Math.abs(ClipperLib.Clipper.Area(path)) / (scale * scale))
+              };
+              scrapPieces.push(piece);
+              traverseScrapTree(childNode, piece);
+            }
+          }
+        };
+        traverseScrapTree(polyTree, null);
+      } catch (scrapErr) {
+        console.error('[NestingService] Failed to compute scrap inside extractLeftoverGeometry:', scrapErr.message);
+      }
+    }
+    region.scrapPieces = scrapPieces;
+  });
+
+  return leftoverRegions;
+}
+
 module.exports = {
   runDeepnestNext,
   runDeepnestNextInWorker,
   calculateFileArea,
   updateLayoutFiles,
   calculateRealisticCuttingTime,
-  validatePlacement
+  validatePlacement,
+  findLargestRectangleInLeftover,
+  rotatePolygon,
+  shiftPolygon
 };

@@ -209,6 +209,7 @@ export default function NestingProcessingDashboard() {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [showGrid, setShowGrid] = useState(true);
+  const [sheetGeometry, setSheetGeometry] = useState(null);
 
   // Refs for tracking timer and timeout instances
   const timerRef = useRef(null);
@@ -272,6 +273,17 @@ export default function NestingProcessingDashboard() {
         const h = data.sheetHeight || 1000;
         setSheetWidth(w);
         setSheetHeight(h);
+
+        if (data.remnantId) {
+          try {
+            const remRes = await api.getRemnant(data.remnantId);
+            if (remRes.success && remRes.data && remRes.data.geometry) {
+              setSheetGeometry(remRes.data.geometry);
+            }
+          } catch (remErr) {
+            console.error('Failed to load remnant geometry:', remErr);
+          }
+        }
 
         // Center calculation for sheet viewport
         const maxDim = Math.max(w, h);
@@ -691,6 +703,7 @@ export default function NestingProcessingDashboard() {
                 setPan={setPan}
                 showGrid={showGrid}
                 isEditMode={false}
+                sheetGeometry={sheetGeometry}
               />
             </Paper>
 

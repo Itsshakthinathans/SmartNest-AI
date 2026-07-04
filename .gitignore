@@ -31,6 +31,7 @@ obj/
 # Uploads cache and database storage
 backend/src/uploads/projects/
 backend/src/uploads/temp/
+backend/src/uploads/remnants/
 
 # Logs and validation outputs
 *.log

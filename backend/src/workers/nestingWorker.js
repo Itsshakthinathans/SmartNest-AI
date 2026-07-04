@@ -2,7 +2,7 @@ const { parentPort, workerData } = require('worker_threads');
 const nestingService = require('../services/nestingService');
 
 async function run() {
-  const { files, projectId, optimizationLevel, sheetWidth, sheetHeight, strategy } = workerData;
+  const { files, projectId, optimizationLevel, sheetWidth, sheetHeight, strategy, remnantId } = workerData;
 
   const onProgress = (fileId, stage, status) => {
     parentPort.postMessage({
@@ -21,7 +21,8 @@ async function run() {
       sheetWidth,
       sheetHeight,
       strategy,
-      onProgress
+      onProgress,
+      remnantId
     );
 
     parentPort.postMessage({

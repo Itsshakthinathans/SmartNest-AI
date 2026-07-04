@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   Typography,
   Box,
@@ -290,6 +290,7 @@ function PartPreviewCard({ part, onQuantityChange }) {
 export default function ReviewNestJob() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [project, setProject] = useState(null);
   const [files, setFiles] = useState([]);
@@ -311,9 +312,51 @@ export default function ReviewNestJob() {
     selectedRemnant: null
   });
 
+  const [suitability, setSuitability] = useState(null);
+  const [suitabilityLoading, setSuitabilityLoading] = useState(false);
+
   useEffect(() => {
     fetchData();
   }, [id]);
+
+  useEffect(() => {
+    if (project && files.length > 0) {
+      runSuitabilityCheck();
+    }
+  }, [project, files, config]);
+
+  async function runSuitabilityCheck() {
+    try {
+      setSuitabilityLoading(true);
+      let localWidth = 1000;
+      let localHeight = 1000;
+      if (config.selectedRemnant) {
+        localWidth = config.selectedRemnant.remaining_width;
+        localHeight = config.selectedRemnant.remaining_height;
+      } else if (config.sheetSizePreset === 'custom') {
+        localWidth = parseInt(config.customWidth, 10) || 1000;
+        localHeight = parseInt(config.customHeight, 10) || 1000;
+      } else {
+        const [w, h] = config.sheetSizePreset.split('x').map(Number);
+        localWidth = w || 1000;
+        localHeight = h || 1000;
+      }
+
+      const payload = {
+        remnantId: config.selectedRemnant?.id || null,
+        sheetWidth: localWidth,
+        sheetHeight: localHeight
+      };
+      const res = await api.checkPreNestSuitability(id, payload);
+      if (res.success) {
+        setSuitability(res);
+      }
+    } catch (err) {
+      console.error('Failed to calculate pre-nest suitability:', err);
+    } finally {
+      setSuitabilityLoading(false);
+    }
+  }
 
   async function fetchData() {
     try {
@@ -328,26 +371,51 @@ export default function ReviewNestJob() {
       const filesRes = await api.getProjectFiles(id);
       setFiles(filesRes.data);
 
+      // Check query parameter remnantId
+      const queryParams = new URLSearchParams(location.search);
+      const remnantIdFromUrl = queryParams.get('remnantId');
+      let loadedRemnant = null;
+      if (remnantIdFromUrl) {
+        try {
+          const remnantRes = await api.getRemnant(remnantIdFromUrl);
+          if (remnantRes.success && remnantRes.data) {
+            loadedRemnant = remnantRes.data;
+          }
+        } catch (urlRemnantErr) {
+          console.error('[ReviewNestJob] Failed to preload remnant from URL query:', urlRemnantErr);
+        }
+      }
+
       // Load session configuration
       const savedConfig = sessionStorage.getItem(`project_config_${id}`);
       let currentWidth = 1000;
       let currentHeight = 1000;
+      let parsed = {};
       if (savedConfig) {
-        const parsed = JSON.parse(savedConfig);
-        setConfig(parsed);
+        parsed = JSON.parse(savedConfig);
+      }
 
-        // Resolve sheet dimensions to center the canvas
-        if (parsed.selectedRemnant) {
-          currentWidth = parsed.selectedRemnant.remaining_width;
-          currentHeight = parsed.selectedRemnant.remaining_height;
-        } else if (parsed.sheetSizePreset === 'custom') {
-          currentWidth = parseInt(parsed.customWidth, 10) || 1000;
-          currentHeight = parseInt(parsed.customHeight, 10) || 1000;
-        } else {
-          const [w, h] = parsed.sheetSizePreset.split('x').map(Number);
-          currentWidth = w || 1000;
-          currentHeight = h || 1000;
-        }
+      if (loadedRemnant) {
+        parsed.selectedRemnant = loadedRemnant;
+        parsed.sheetSizePreset = 'custom';
+        parsed.customWidth = loadedRemnant.remaining_width;
+        parsed.customHeight = loadedRemnant.remaining_height;
+        sessionStorage.setItem(`project_config_${id}`, JSON.stringify(parsed));
+      }
+
+      setConfig(parsed);
+
+      // Resolve sheet dimensions to center the canvas
+      if (parsed.selectedRemnant) {
+        currentWidth = parsed.selectedRemnant.remaining_width;
+        currentHeight = parsed.selectedRemnant.remaining_height;
+      } else if (parsed.sheetSizePreset === 'custom') {
+        currentWidth = parseInt(parsed.customWidth, 10) || 1000;
+        currentHeight = parseInt(parsed.customHeight, 10) || 1000;
+      } else if (parsed.sheetSizePreset) {
+        const [w, h] = parsed.sheetSizePreset.split('x').map(Number);
+        currentWidth = w || 1000;
+        currentHeight = h || 1000;
       }
 
       // Initialize Zoom & Centering
@@ -674,6 +742,88 @@ export default function ReviewNestJob() {
               {renderStrategyDescription()}
             </Paper>
 
+            {/* Pre-Nesting Suitability Panel */}
+            <Paper sx={{ p: 3, bgcolor: '#0f1319', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '12px' }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                <Typography variant="h6" sx={{ color: '#ffffff', fontWeight: 700 }}>
+                  Pre-Nest Suitability Analyzer
+                </Typography>
+                {suitabilityLoading && <CircularProgress size={16} sx={{ color: '#0d9488' }} />}
+              </Box>
+              <Divider sx={{ borderColor: 'rgba(255,255,255,0.06)', mb: 2 }} />
+
+              {suitability ? (
+                <Stack spacing={2}>
+                  <Box>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+                      <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 600 }}>ESTIMATED PACKING YIELD</Typography>
+                      <Typography variant="caption" sx={{ color: '#0d9488', fontWeight: 800 }}>{suitability.estimatedUtilization}%</Typography>
+                    </Box>
+                    <Box sx={{ width: '100%', height: '8px', bgcolor: 'rgba(255,255,255,0.04)', borderRadius: '4px', overflow: 'hidden' }}>
+                      <Box 
+                        sx={{ 
+                          width: `${suitability.estimatedUtilization}%`, 
+                          height: '100%', 
+                          bgcolor: suitability.estimatedUtilization > 85 ? '#f7768e' : suitability.estimatedUtilization > 50 ? '#0d9488' : '#ff9e64',
+                          transition: 'width 0.3s ease' 
+                        }} 
+                      />
+                    </Box>
+                  </Box>
+
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 600 }}>ESTIMATED WASTE / LEFTOVER</Typography>
+                    <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 700 }}>{formatArea(suitability.estimatedRemainingMaterial)}</Typography>
+                  </Box>
+
+                  <Box>
+                    <Typography variant="caption" sx={{ color: '#565f89', display: 'block', mb: 1, fontWeight: 700, textTransform: 'uppercase' }}>
+                      Part Feasibility Checklist
+                    </Typography>
+                    <Stack spacing={1}>
+                      {suitability.fitStatus.map((part) => (
+                        <Box 
+                          key={part.fileId} 
+                          sx={{ 
+                            display: 'flex', 
+                            justifyContent: 'space-between', 
+                            alignItems: 'center', 
+                            p: 1, 
+                            borderRadius: '6px', 
+                            bgcolor: part.tooLarge ? 'rgba(247, 118, 142, 0.05)' : 'rgba(16, 185, 129, 0.04)',
+                            border: part.tooLarge ? '1px solid rgba(247, 118, 142, 0.15)' : '1px solid rgba(16, 185, 129, 0.1)'
+                          }}
+                        >
+                          <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 600, textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', maxWidth: '200px' }}>
+                            {part.fileName}
+                          </Typography>
+                          
+                          {part.tooLarge ? (
+                            <Chip 
+                              label="Too Large" 
+                              size="small" 
+                              sx={{ height: '16px', fontSize: '0.6rem', bgcolor: '#f7768e', color: '#ffffff', fontWeight: 800 }} 
+                            />
+                          ) : (
+                            <Chip 
+                              label={`Fitted ${part.fittedQty}/${part.requestedQty}`} 
+                              size="small" 
+                              color="success"
+                              sx={{ height: '16px', fontSize: '0.6rem', fontWeight: 800 }} 
+                            />
+                          )}
+                        </Box>
+                      ))}
+                    </Stack>
+                  </Box>
+                </Stack>
+              ) : (
+                <Typography variant="caption" sx={{ color: '#565f89' }}>
+                  Calculating layout packing suitability...
+                </Typography>
+              )}
+            </Paper>
+
             {/* 2. Layout Canvas Empty Stock Sheet Preview */}
             <Paper sx={{ p: 3, bgcolor: '#0f1319', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '12px' }}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
@@ -737,6 +887,7 @@ export default function ReviewNestJob() {
                 setPan={setPan}
                 showGrid={showGrid}
                 isEditMode={false}
+                sheetGeometry={config.selectedRemnant?.geometry || null}
               />
             </Paper>
 

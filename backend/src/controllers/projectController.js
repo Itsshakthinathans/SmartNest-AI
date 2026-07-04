@@ -213,11 +213,70 @@ const updateProjectMaterial = async (req, res) => {
   }
 };
 
+const createProjectFromRemnant = async (req, res) => {
+  const { remnantId, project_name, user_id, description } = req.body;
+
+  if (!remnantId) {
+    return res.status(400).json({
+      success: false,
+      message: 'remnantId is required'
+    });
+  }
+
+  try {
+    const remnantRes = await pool.query('SELECT * FROM remnants WHERE id = $1', [remnantId]);
+    if (remnantRes.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: `Remnant with ID ${remnantId} not found`
+      });
+    }
+    const remnant = remnantRes.rows[0];
+
+    const name = project_name || `Project from Remnant RM-${remnantId}`;
+    const uid = user_id || 1;
+    const desc = description || `Created automatically from remnant RM-${remnantId}`;
+
+    const query = `
+      INSERT INTO projects (user_id, project_name, description, material_type, material_thickness)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING *
+    `;
+    const values = [
+      uid,
+      name,
+      desc,
+      remnant.material_type,
+      remnant.material_thickness
+    ];
+    const result = await pool.query(query, values);
+    const newProject = result.rows[0];
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        id: newProject.id,
+        project_name: newProject.project_name,
+        materialType: newProject.material_type,
+        materialThickness: parseFloat(newProject.material_thickness)
+      }
+    });
+  } catch (err) {
+    console.error('Error in createProjectFromRemnant:', err.message);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal Server Error',
+      error: err.message
+    });
+  }
+};
+
 module.exports = {
   createProject,
   getAllProjects,
   getProjectById,
   deleteProject,
   getDashboardStats,
-  updateProjectMaterial
+  updateProjectMaterial,
+  createProjectFromRemnant
 };

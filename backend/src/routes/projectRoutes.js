@@ -6,11 +6,13 @@ const {
   getProjectById,
   deleteProject,
   getDashboardStats,
-  updateProjectMaterial
+  updateProjectMaterial,
+  createProjectFromRemnant
 } = require('../controllers/projectController');
 
 // Define API routes for project management
 router.post('/', createProject);
+router.post('/create-from-remnant', createProjectFromRemnant);
 router.get('/', getAllProjects);
 router.get('/dashboard/stats', getDashboardStats);
 router.get('/:id', getProjectById);

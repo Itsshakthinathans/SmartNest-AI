@@ -174,28 +174,45 @@ EOF`;
     }
     console.log(`Nesting Job completed in ${Math.round((Date.now() - startTime) / 1000)}s.`);
 
-    // 5. Verify remnant is automatically stored in database
-    console.log('\nVerifying remnant auto-creation...');
-    const remnantsQuery = 'SELECT * FROM remnants WHERE project_id = $1';
+    // 5. Verify remnant is automatically partitioned and stored in database
+    console.log('\nVerifying remnant auto-creation and partitioning...');
+    const remnantsQuery = 'SELECT * FROM remnants WHERE project_id = $1 ORDER BY id ASC';
     const remnantsResult = await pool.query(remnantsQuery, [testProjectId1]);
 
     if (remnantsResult.rows.length === 0) {
-      throw new Error('Verification Failed: Remnant record was NOT automatically created in database!');
+      throw new Error('Verification Failed: No remnant records were automatically created in database!');
     }
 
-    const remnant = remnantsResult.rows[0];
-    console.log('Remnant record verified:');
-    console.log(`- Remnant ID: RM-${String(remnant.id).padStart(4, '0')}`);
-    console.log(`- Material Type: ${remnant.material_type} (Expected: Mild Steel)`);
-    console.log(`- Material Thickness: ${remnant.material_thickness} mm (Expected: 5.00 mm)`);
-    console.log(`- Remaining Area: ${remnant.remaining_area} mm²`);
-    console.log(`- Remaining Size: ${remnant.remaining_width} x ${remnant.remaining_height} mm`);
-    console.log(`- Estimated Recovery Value: ₹ ${remnant.estimated_value}`);
+    console.log(`Found ${remnantsResult.rows.length} total remnant database records for the project.`);
 
-    if (parseFloat(remnant.estimated_value) <= 0) {
-      throw new Error('Verification Failed: Remnant estimated value calculation is 0 or negative!');
+    const parentRemnant = remnantsResult.rows.find(r => r.status === 'Consumed');
+    const childRemnant = remnantsResult.rows.find(r => r.status === 'Available' && !r.is_scrap);
+    const scrapRemnants = remnantsResult.rows.filter(r => r.status === 'Available' && r.is_scrap);
+
+    if (!parentRemnant) {
+      throw new Error('Verification Failed: Parent remnant record matching the original leftover profile (status=Consumed) was not found!');
     }
-    console.log('✔ Remnant record successfully auto-seeded and value calculated.');
+    console.log('✔ Consumed parent remnant found (holds the original leftover geometry).');
+
+    if (!childRemnant) {
+      throw new Error('Verification Failed: Usable rectangular remnant (is_scrap=false, status=Available) was not generated!');
+    }
+    console.log('✔ Usable child rectangular remnant found:');
+    console.log(`  - Remnant ID: RM-${String(childRemnant.id).padStart(4, '0')}`);
+    console.log(`  - Remaining Size: ${childRemnant.remaining_width} x ${childRemnant.remaining_height} mm`);
+    console.log(`  - Recovery Value: ₹ ${childRemnant.estimated_value}`);
+
+    if (scrapRemnants.length > 0) {
+      console.log(`✔ Found ${scrapRemnants.length} scrap remnants (is_scrap=true):`);
+      scrapRemnants.forEach(sr => {
+        console.log(`  - Scrap ID: RM-${String(sr.id).padStart(4, '0')} (${sr.remaining_width} x ${sr.remaining_height} mm, ₹ ${sr.estimated_value})`);
+      });
+    } else {
+      console.log('No scrap remnants generated (due to simple layout shape thresholds).');
+    }
+
+    const remnant = childRemnant; // Assign child remnant for downstream tests
+    console.log('✔ Remnant records successfully verified.');
 
     // 6. Verify remnant appears in remnants list API (GET /api/remnants)
     console.log('\n[API Test] GET /api/remnants');

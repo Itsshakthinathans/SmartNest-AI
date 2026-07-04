@@ -32,6 +32,66 @@ import {
 } from '@mui/icons-material';
 import api from '../services/api';
 
+// Helper component to render SVG thumbnail preview of remnants
+function RemnantThumbnail({ filePath, width = 70, height = 50 }) {
+  const [svgContent, setSvgContent] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!filePath) return;
+    let active = true;
+    const loadSvg = async () => {
+      setLoading(true);
+      try {
+        const url = `http://localhost:5000/${filePath}`;
+        const response = await fetch(url);
+        if (response.ok) {
+          const text = await response.text();
+          if (active) setSvgContent(text);
+        }
+      } catch (err) {
+        console.error('Failed to load remnant SVG:', err);
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    loadSvg();
+    return () => { active = false; };
+  }, [filePath]);
+
+  if (loading) return <CircularProgress size={14} sx={{ color: '#0d9488' }} />;
+  
+  if (!filePath) {
+    return (
+      <Box sx={{ width, height, border: '1px dashed rgba(255, 255, 255, 0.1)', borderRadius: '4px', bgcolor: 'rgba(255,255,255,0.01)', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+        <Typography variant="caption" sx={{ color: '#565f89', fontSize: '0.6rem' }}>Rectangular</Typography>
+      </Box>
+    );
+  }
+
+  if (!svgContent) return <Typography variant="caption" sx={{ color: '#565f89', fontSize: '0.6rem' }}>Failed</Typography>;
+
+  return (
+    <Box 
+      sx={{ 
+        width, 
+        height, 
+        display: 'flex', 
+        justifyContent: 'center', 
+        alignItems: 'center', 
+        overflow: 'hidden',
+        '& svg': {
+          maxWidth: '100%',
+          maxHeight: '100%',
+          width: 'auto',
+          height: 'auto'
+        }
+      }}
+      dangerouslySetInnerHTML={{ __html: svgContent }}
+    />
+  );
+}
+
 export default function ProjectDetails() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -242,7 +302,7 @@ export default function ProjectDetails() {
 
   const handleNext = () => {
     if (files.length === 0) return;
-    navigate(`/projects/${id}/review`);
+    navigate(`/projects/${id}/review${window.location.search}`);
   };
 
   if (loading) {
@@ -737,58 +797,97 @@ export default function ProjectDetails() {
                       bgcolor: 'rgba(13, 148, 136, 0.03)',
                       p: 2,
                       display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'flex-start',
+                      gap: 2,
+                      alignItems: 'center',
                       transition: 'border-color 0.2s ease',
                       '&:hover': {
                         borderColor: '#0d9488',
                       }
                     }}
                   >
-                    <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', mb: 1 }}>
-                      <Typography variant="subtitle2" sx={{ color: '#06b6d4', fontWeight: '800' }}>
-                        RM-{String(rec.id).padStart(4, '0')}
-                      </Typography>
-                      <Typography variant="subtitle2" sx={{ color: '#10b981', fontWeight: '700' }}>
-                        {formatCurrency(rec.estimated_value)}
-                      </Typography>
+                    {/* SVG Preview thumbnail on the left */}
+                    <Box sx={{ width: '80px', height: '60px', display: 'flex', justifyContent: 'center', alignItems: 'center', bgcolor: '#0a0d14', borderRadius: '4px', p: 0.5 }}>
+                      <RemnantThumbnail filePath={rec.svg_preview} width={70} height={50} />
                     </Box>
-                    <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', color: '#a9b1d6', mb: 1 }}>
-                      <Typography variant="caption" sx={{ fontWeight: '600' }}>
-                        Dimensions: {rec.remaining_width} x {rec.remaining_height} mm
-                      </Typography>
-                      <Typography variant="caption" sx={{ fontWeight: '600' }}>
-                        Area: {formatArea(rec.remaining_area)}
-                      </Typography>
-                    </Box>
-                    <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', borderTop: '1px dashed rgba(255,255,255,0.06)', pt: 1, mt: 0.5 }}>
-                      <Typography variant="caption" sx={{ color: '#565f89' }}>
-                        From: {rec.project_name || `Project #${rec.project_id}`}
-                      </Typography>
-                      <Typography variant="caption" sx={{ color: '#0d9488', fontWeight: '700' }}>
-                        {rec.utilization}% nested
-                      </Typography>
-                    </Box>
-                    <Box sx={{ display: 'flex', justifyContent: 'flex-end', width: '100%', mt: 1.5 }}>
-                      <Button
-                        variant={selectedRemnant?.id === rec.id ? 'contained' : 'outlined'}
-                        size="small"
-                        onClick={() => setSelectedRemnant(selectedRemnant?.id === rec.id ? null : rec)}
-                        sx={{
-                          borderColor: '#0d9488',
-                          color: selectedRemnant?.id === rec.id ? '#ffffff' : '#0d9488',
-                          bgcolor: selectedRemnant?.id === rec.id ? '#0d9488' : 'transparent',
-                          textTransform: 'none',
-                          fontSize: '0.75rem',
-                          py: 0.5,
-                          '&:hover': {
-                            borderColor: '#06b6d4',
-                            bgcolor: selectedRemnant?.id === rec.id ? '#0f766e' : 'rgba(13, 148, 136, 0.08)',
+
+                    {/* Metadata on the right */}
+                    <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+                        <Typography variant="subtitle2" sx={{ color: '#06b6d4', fontWeight: '800' }}>
+                          RM-{String(rec.id).padStart(4, '0')}
+                        </Typography>
+                        <Typography variant="subtitle2" sx={{ color: '#10b981', fontWeight: '700' }}>
+                          {formatCurrency(rec.estimated_value)}
+                        </Typography>
+                      </Box>
+                      {/* Remnant type & bounds */}
+                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, color: '#a9b1d6', width: '100%' }}>
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+                          <Typography variant="caption" sx={{ fontWeight: '700', color: rec.is_scrap ? '#e0af68' : '#0d9488' }}>
+                            {rec.is_scrap ? 'Scrap Offcut' : 'Standard Stock'}
+                          </Typography>
+                          <Typography variant="caption" sx={{ fontWeight: '600' }}>
+                            Area: {formatArea(rec.remaining_area)}
+                          </Typography>
+                        </Box>
+                        
+                        <Typography variant="caption" sx={{ color: '#a9b1d6', display: 'block' }}>
+                          Bounding Box: {rec.remaining_width} x {rec.remaining_height} mm
+                        </Typography>
+
+                        {rec.is_scrap && (() => {
+                          let geom = null;
+                          try { geom = typeof rec.geometry === 'string' ? JSON.parse(rec.geometry) : rec.geometry; } catch (e) {}
+                          if (geom && geom.usableRectangle) {
+                            return (
+                              <Typography variant="caption" sx={{ color: '#0d9488', fontWeight: 600, display: 'block' }}>
+                                Usable Rectangle: {geom.usableRectangle.width} x {geom.usableRectangle.height} mm
+                              </Typography>
+                            );
                           }
-                        }}
-                      >
-                        {selectedRemnant?.id === rec.id ? 'Deselect' : 'Use Remnant'}
-                      </Button>
+                          return null;
+                        })()}
+
+                        {(() => {
+                          const avgArea = files.length > 0 ? (files.reduce((sum, f) => sum + parseFloat(f.area || 0), 0) / files.length) : 0;
+                          const fitCount = avgArea > 0 ? Math.floor((parseFloat(rec.remaining_area) * 0.8) / avgArea) : 0;
+                          return (
+                            <Typography variant="caption" sx={{ color: '#10b981', fontWeight: 600, display: 'block' }}>
+                              Est. Capacity: ~{fitCount} parts (80% util)
+                            </Typography>
+                          );
+                        })()}
+                      </Box>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', borderTop: '1px dashed rgba(255,255,255,0.06)', pt: 0.5, mt: 0.5 }}>
+                        <Typography variant="caption" sx={{ color: '#565f89' }}>
+                          From: {rec.project_name || `Project #${rec.project_id}`}
+                        </Typography>
+                        <Typography variant="caption" sx={{ color: '#0d9488', fontWeight: '700' }}>
+                          {rec.utilization}% nested
+                        </Typography>
+                      </Box>
+                      <Box sx={{ display: 'flex', justifyContent: 'flex-end', width: '100%', mt: 0.5 }}>
+                        <Button
+                          variant={selectedRemnant?.id === rec.id ? 'contained' : 'outlined'}
+                          size="small"
+                          onClick={() => setSelectedRemnant(selectedRemnant?.id === rec.id ? null : rec)}
+                          sx={{
+                            borderColor: '#0d9488',
+                            color: selectedRemnant?.id === rec.id ? '#ffffff' : '#0d9488',
+                            bgcolor: selectedRemnant?.id === rec.id ? '#0d9488' : 'transparent',
+                            textTransform: 'none',
+                            fontSize: '0.7rem',
+                            py: 0.25,
+                            px: 1,
+                            '&:hover': {
+                              borderColor: '#06b6d4',
+                              bgcolor: selectedRemnant?.id === rec.id ? '#0f766e' : 'rgba(13, 148, 136, 0.08)',
+                            }
+                          }}
+                        >
+                          {selectedRemnant?.id === rec.id ? 'Deselect' : 'Use Remnant'}
+                        </Button>
+                      </Box>
                     </Box>
                   </ListItem>
                 ))}

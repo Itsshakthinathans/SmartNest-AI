@@ -2,6 +2,32 @@ const { pool } = require('../config/database');
 const nestingService = require('../services/nestingService');
 const costingService = require('../services/costingService');
 
+const generateRemnantSvg = (region, remnantId) => {
+  let minX = Infinity, minY = Infinity;
+  region.outer.forEach(pt => {
+    if (pt.x < minX) minX = pt.x;
+    if (pt.y < minY) minY = pt.y;
+  });
+
+  const margin = 10;
+  const outerPath = region.outer.map(pt => `${(pt.x - minX + margin).toFixed(2)}, ${(pt.y - minY + margin).toFixed(2)}`).join(' L ');
+  let pathD = `M ${outerPath} Z`;
+
+  if (region.holes && region.holes.length > 0) {
+    region.holes.forEach(hole => {
+      const holePath = hole.map(pt => `${(pt.x - minX + margin).toFixed(2)}, ${(pt.y - minY + margin).toFixed(2)}`).join(' L ');
+      pathD += ` M ${holePath} Z`;
+    });
+  }
+
+  const svgWidth = region.width + margin * 2;
+  const svgHeight = region.height + margin * 2;
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${svgWidth}" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}">
+  <path d="${pathD}" fill="rgba(13, 148, 136, 0.15)" stroke="#0d9488" stroke-width="2" fill-rule="evenodd" />
+</svg>`;
+};
+
 const activeJobsProgress = new Map();
 
 // Cutting time estimation helper
@@ -61,6 +87,157 @@ const calculateRemnantValue = (materialType, thickness, area) => {
   return parseFloat(value.toFixed(2));
 };
 
+const partitionLeftoverGeometry = async (projectId, materialType, thickness, sheetWidth, sheetHeight, utilization, region, parentRemnantId, originalSheet) => {
+  // 1. Insert original leftover as parent remnant (consumed immediately)
+  const parentValue = calculateRemnantValue(materialType, thickness, region.area);
+  const parentRes = await pool.query(`
+    INSERT INTO remnants (
+      project_id, material_type, material_thickness, sheet_width, sheet_height,
+      utilization, remaining_area, remaining_width, remaining_height, estimated_value,
+      geometry, status, parent_remnant_id, original_sheet, is_scrap
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, FALSE)
+    RETURNING id
+  `, [
+    projectId,
+    materialType,
+    thickness,
+    sheetWidth,
+    sheetHeight,
+    utilization,
+    region.area,
+    region.width,
+    region.height,
+    parentValue,
+    JSON.stringify(region),
+    'Consumed', // Consumed immediately as it splits into child rectangle and scrap
+    parentRemnantId || null,
+    originalSheet
+  ]);
+  const parentId = parentRes.rows[0].id;
+  
+  // Write Parent SVG
+  try {
+    const parentSvg = generateRemnantSvg(region, parentId);
+    const fs = require('fs');
+    const path = require('path');
+    const svgRelativePath = `uploads/remnants/rm_${parentId}.svg`;
+    const fullRemnantsDir = path.join(__dirname, '../uploads/remnants');
+    if (!fs.existsSync(fullRemnantsDir)) {
+      fs.mkdirSync(fullRemnantsDir, { recursive: true });
+    }
+    fs.writeFileSync(path.join(__dirname, '../', svgRelativePath), parentSvg);
+    await pool.query('UPDATE remnants SET svg_preview = $1 WHERE id = $2', [svgRelativePath, parentId]);
+  } catch (err) {
+    console.error('Failed to generate parent remnant SVG:', err.message);
+  }
+
+  // 2. Insert the Usable Rectangular Remnant
+  const rect = region.usableRectangle;
+  let rectRemnantId = null;
+  const minAreaThreshold = 5000; // 5000 mm²
+  const minWidthThreshold = 50;  // 50 mm
+  const minHeightThreshold = 50; // 50 mm
+  
+  const hasValidRect = rect && rect.area >= minAreaThreshold && rect.width >= minWidthThreshold && rect.height >= minHeightThreshold;
+  if (hasValidRect) {
+    const rectOuter = [
+      { x: rect.x1, y: rect.y1 },
+      { x: rect.x2, y: rect.y1 },
+      { x: rect.x2, y: rect.y2 },
+      { x: rect.x1, y: rect.y2 }
+    ];
+    const rectGeometry = {
+      outer: rectOuter,
+      holes: [],
+      width: rect.width,
+      height: rect.height,
+      area: rect.area
+    };
+    
+    const rectValue = calculateRemnantValue(materialType, thickness, rect.area);
+    const rectRes = await pool.query(`
+      INSERT INTO remnants (
+        project_id, material_type, material_thickness, sheet_width, sheet_height,
+        utilization, remaining_area, remaining_width, remaining_height, estimated_value,
+        geometry, status, parent_remnant_id, original_sheet, is_scrap
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, FALSE)
+      RETURNING id
+    `, [
+      projectId,
+      materialType,
+      thickness,
+      rect.width,
+      rect.height,
+      utilization,
+      rect.area,
+      rect.width,
+      rect.height,
+      rectValue,
+      JSON.stringify(rectGeometry),
+      'Available',
+      parentId,
+      originalSheet
+    ]);
+    rectRemnantId = rectRes.rows[0].id;
+    
+    // Write Rectangle SVG
+    try {
+      const rectSvg = generateRemnantSvg(rectGeometry, rectRemnantId);
+      const fs = require('fs');
+      const path = require('path');
+      const svgRelativePath = `uploads/remnants/rm_${rectRemnantId}.svg`;
+      fs.writeFileSync(path.join(__dirname, '../', svgRelativePath), rectSvg);
+      await pool.query('UPDATE remnants SET svg_preview = $1 WHERE id = $2', [svgRelativePath, rectRemnantId]);
+    } catch (err) {
+      console.error('Failed to generate rectangle remnant SVG:', err.message);
+    }
+  }
+  
+  // 3. Insert Scrap pieces
+  const scrapPieces = region.scrapPieces || [];
+  for (const piece of scrapPieces) {
+    const isPieceReusable = piece.area >= minAreaThreshold && piece.width >= minWidthThreshold && piece.height >= minHeightThreshold;
+    if (isPieceReusable) {
+      const scrapValue = calculateRemnantValue(materialType, thickness, piece.area);
+      const scrapRes = await pool.query(`
+        INSERT INTO remnants (
+          project_id, material_type, material_thickness, sheet_width, sheet_height,
+          utilization, remaining_area, remaining_width, remaining_height, estimated_value,
+          geometry, status, parent_remnant_id, original_sheet, is_scrap
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, TRUE)
+        RETURNING id
+      `, [
+        projectId,
+        materialType,
+        thickness,
+        piece.width,
+        piece.height,
+        utilization,
+        piece.area,
+        piece.width,
+        piece.height,
+        scrapValue,
+        JSON.stringify(piece),
+        'Available',
+        parentId,
+        originalSheet
+      ]);
+      const newScrapId = scrapRes.rows[0].id;
+      
+      try {
+        const scrapSvg = generateRemnantSvg(piece, newScrapId);
+        const fs = require('fs');
+        const path = require('path');
+        const svgRelativePath = `uploads/remnants/rm_${newScrapId}.svg`;
+        fs.writeFileSync(path.join(__dirname, '../', svgRelativePath), scrapSvg);
+        await pool.query('UPDATE remnants SET svg_preview = $1 WHERE id = $2', [svgRelativePath, newScrapId]);
+      } catch (err) {
+        console.error('Failed to generate scrap remnant SVG:', err.message);
+      }
+    }
+  }
+};
+
 const calculateRemnantDimensions = (sheetWidth, sheetHeight, maxX, maxY) => {
   const mx = maxX || 0;
   const my = maxY || 0;
@@ -88,6 +265,10 @@ const calculateRemnantDimensions = (sheetWidth, sheetHeight, maxX, maxY) => {
 // Helper to run nesting in the background
 const runNestingInBackground = async (jobId, files, projectId, optimizationLevel, sheetWidth, sheetHeight, remnantId, isRegenerate = false, nestingMode = 'multi') => {
   try {
+    if (remnantId) {
+      await pool.query("UPDATE remnants SET status = 'Reserved' WHERE id = $1", [remnantId]);
+    }
+
     // Initialize in-memory progress registry
     activeJobsProgress.set(parseInt(jobId, 10), {
       currentStage: 'reading_dxf',
@@ -135,7 +316,7 @@ const runNestingInBackground = async (jobId, files, projectId, optimizationLevel
           }
         };
 
-        const result = await nestingService.runDeepnestNextInWorker(files, projectId, runLevel, sheetWidth, sheetHeight, strat, onProgress);
+        const result = await nestingService.runDeepnestNextInWorker(files, projectId, runLevel, sheetWidth, sheetHeight, strat, onProgress, remnantId);
         const stratRuntime = Date.now() - stratStart;
 
         const cost = costingService.calculateCost(materialType, thickness, sheetWidth, sheetHeight, result.utilization);
@@ -162,6 +343,7 @@ const runNestingInBackground = async (jobId, files, projectId, optimizationLevel
           generatedParts: result.generatedParts,
           maxX: result.maxX,
           maxY: result.maxY,
+          leftoverRegions: result.leftoverRegions,
           applied: (strat === 'a')
         };
 
@@ -230,31 +412,22 @@ const runNestingInBackground = async (jobId, files, projectId, optimizationLevel
       if (fs.existsSync(activeSvg)) fs.copyFileSync(activeSvg, origSvgPath);
       if (fs.existsSync(activeJson)) fs.copyFileSync(activeJson, origJsonPath);
 
-      // Store remnant for Strategy A
-      const remainingWidth = defaultStrat.largestRemnantWidth;
-      const remainingHeight = defaultStrat.largestRemnantHeight;
-      
-      const remnantQuery = `
-        INSERT INTO remnants (
-          project_id, material_type, material_thickness, sheet_width, sheet_height,
-          utilization, remaining_area, remaining_width, remaining_height, estimated_value
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-      `;
-      await pool.query(remnantQuery, [
-        projectId,
-        materialType,
-        thickness,
-        sheetWidth,
-        sheetHeight,
-        defaultStrat.utilization,
-        defaultStrat.remainingArea,
-        remainingWidth,
-        remainingHeight,
-        defaultStrat.remnantValue
-      ]);
+      // Clear any previously generated unconsumed remnants for this project to prevent duplicates
+      await pool.query("DELETE FROM remnants WHERE project_id = $1 AND status = 'Available'", [projectId]);
+
+      // Handle leftover regions for Strategy A
+      const leftoverRegions = defaultStrat.leftoverRegions || [];
+      const originalSheet = `${sheetWidth}x${sheetHeight}`;
+
+      for (const region of leftoverRegions) {
+        await partitionLeftoverGeometry(
+          projectId, materialType, thickness, sheetWidth, sheetHeight,
+          defaultStrat.utilization, region, remnantId || null, originalSheet
+        );
+      }
 
       if (remnantId) {
-        await pool.query('UPDATE remnants SET used = true WHERE id = $1', [remnantId]);
+        await pool.query("UPDATE remnants SET status = 'Consumed', used = true WHERE id = $1", [remnantId]);
       }
       console.log(`[NestingController] Job ID ${jobId} (Multi-Strategy) completed successfully.`);
 
@@ -281,7 +454,7 @@ const runNestingInBackground = async (jobId, files, projectId, optimizationLevel
         }
       };
 
-      const result = await nestingService.runDeepnestNextInWorker(files, projectId, optimizationLevel, sheetWidth, sheetHeight, 'single', onProgress);
+      const result = await nestingService.runDeepnestNextInWorker(files, projectId, optimizationLevel, sheetWidth, sheetHeight, 'single', onProgress, remnantId);
       const stratRuntime = Date.now() - runStart;
 
       if (progress) {
@@ -339,36 +512,34 @@ const runNestingInBackground = async (jobId, files, projectId, optimizationLevel
         console.error('[NestingController] Failed to copy original layout references:', copyErr.message);
       }
 
-      const remnantDims = calculateRemnantDimensions(sheetWidth, sheetHeight, result.maxX, result.maxY);
-      const remainingWidth = remnantDims.width;
-      const remainingHeight = remnantDims.height;
+      // Clear any previously generated unconsumed remnants for this project to prevent duplicates
+      await pool.query("DELETE FROM remnants WHERE project_id = $1 AND status = 'Available'", [projectId]);
 
-      const remnantQuery = `
-        INSERT INTO remnants (
-          project_id, material_type, material_thickness, sheet_width, sheet_height,
-          utilization, remaining_area, remaining_width, remaining_height, estimated_value
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-      `;
-      await pool.query(remnantQuery, [
-        projectId,
-        materialType,
-        thickness,
-        sheetWidth,
-        sheetHeight,
-        result.utilization,
-        cost.wasteArea,
-        remainingWidth,
-        remainingHeight,
-        calculateRemnantValue(materialType, thickness, result.largestRemnantArea)
-      ]);
+      // Handle leftover regions for Single Strategy
+      const leftoverRegions = result.leftoverRegions || [];
+      const originalSheet = `${sheetWidth}x${sheetHeight}`;
+
+      for (const region of leftoverRegions) {
+        await partitionLeftoverGeometry(
+          projectId, materialType, thickness, sheetWidth, sheetHeight,
+          result.utilization, region, remnantId || null, originalSheet
+        );
+      }
 
       if (remnantId) {
-        await pool.query('UPDATE remnants SET used = true WHERE id = $1', [remnantId]);
+        await pool.query("UPDATE remnants SET status = 'Consumed', used = true WHERE id = $1", [remnantId]);
       }
       activeJobsProgress.delete(parseInt(jobId, 10));
       console.log(`[NestingController] Job ID ${jobId} completed and remnant stored successfully.`);
     }
   } catch (err) {
+    if (remnantId) {
+      try {
+        await pool.query("UPDATE remnants SET status = 'Available' WHERE id = $1", [remnantId]);
+      } catch (dbErr) {
+        console.error('[NestingController] Failed to restore remnant status on job failure:', dbErr.message);
+      }
+    }
     activeJobsProgress.delete(parseInt(jobId, 10));
     console.error(`[NestingController] Job ID ${jobId} nesting calculation failed:`, err.stack || err.message);
     const query = `
@@ -491,7 +662,7 @@ const getJobStatus = async (req, res) => {
     }
 
     const query = `
-      SELECT j.id, j.project_id, j.status, j.optimization_level, j.total_parts, j.input_file_count, j.sheet_width, j.sheet_height, p.project_name
+      SELECT j.id, j.project_id, j.status, j.optimization_level, j.total_parts, j.input_file_count, j.sheet_width, j.sheet_height, j.remnant_id, p.project_name
       FROM nest_jobs j
       LEFT JOIN projects p ON j.project_id = p.id
       WHERE j.id = $1
@@ -515,7 +686,8 @@ const getJobStatus = async (req, res) => {
       totalParts: job.total_parts,
       inputFileCount: job.input_file_count,
       sheetWidth: job.sheet_width,
-      sheetHeight: job.sheet_height
+      sheetHeight: job.sheet_height,
+      remnantId: job.remnant_id
     };
 
     // If active, enrich with live progress metrics from in-memory map
@@ -788,7 +960,7 @@ const updateLayoutPlacements = async (req, res) => {
     const filesQuery = 'SELECT * FROM uploaded_files WHERE project_id = $1 ORDER BY id ASC';
     const filesResult = await pool.query(filesQuery, [job.project_id]);
 
-    const { maxX, maxY } = await nestingService.updateLayoutFiles(jobId, filesResult.rows, parts, strategy);
+    const { maxX, maxY, leftoverRegions } = await nestingService.updateLayoutFiles(jobId, filesResult.rows, parts, strategy);
 
     const remnantDims = calculateRemnantDimensions(job.sheet_width, job.sheet_height, maxX, maxY);
     const largestRemnantArea = remnantDims.area;
@@ -853,27 +1025,17 @@ const updateLayoutPlacements = async (req, res) => {
           [remnantValue, 'MANUAL EDIT', jobId]
         );
 
-        // Update remnants database table
-        await pool.query('DELETE FROM remnants WHERE project_id = $1 AND used = false', [job.project_id]);
-        const remnantQuery = `
-          INSERT INTO remnants (
-            project_id, material_type, material_thickness, sheet_width, sheet_height,
-            utilization, remaining_area, remaining_width, remaining_height, estimated_value
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        `;
-        const cost = costingService.calculateCost(materialType, thickness, job.sheet_width, job.sheet_height, job.utilization);
-        await pool.query(remnantQuery, [
-          job.project_id,
-          materialType,
-          thickness,
-          job.sheet_width,
-          job.sheet_height,
-          job.utilization,
-          cost.wasteArea,
-          remnantDims.width,
-          remnantDims.height,
-          remnantValue
-        ]);
+        // Delete previous available remnants for this project to prevent duplicates
+        await pool.query("DELETE FROM remnants WHERE project_id = $1 AND status = 'Available'", [job.project_id]);
+
+        const originalSheet = `${job.sheet_width}x${job.sheet_height}`;
+
+        for (const region of leftoverRegions || []) {
+          await partitionLeftoverGeometry(
+            job.project_id, materialType, thickness, job.sheet_width, job.sheet_height,
+            job.utilization || 0, region, job.remnant_id || null, originalSheet
+          );
+        }
       }
     }
 

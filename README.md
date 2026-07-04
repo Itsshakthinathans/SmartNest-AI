@@ -1,4 +1,4 @@
-# <p align="center">📐 SmartNest AI — v1.0 Stable</p>
+# <p align="center">📐 SmartNest AI — v1.1 Industrial Stable</p>
 
 <p align="center">
   <strong>An Industrial-Grade Headless Nesting Optimization Engine, Sheet Remnant Stock Recovery System, and Gemini-Powered Fabrication Advisor.</strong>
@@ -22,7 +22,7 @@ SmartNest AI is a modern CAD/CAM nesting dashboard designed to optimize sheet la
 With interactive CAD pan-and-zoom previews, geometric centroid calculations, and an embedded Gemini advisor, it bridges the gap between software optimization and physical shop-floor efficiency.
 
 > [!IMPORTANT]
-> **Production Status**: **v1.0-Stable** is fully verified. Unit tests, database migrations, and E2E simulation checks have completed successfully.
+> **Production Status**: **v1.1-Stable** is fully verified. Recent releases integrate an interactive Manual Nesting Editor, an automated Bottom-Left-Fill Pre-Nest Suitability Analyzer, and geometric remnant stock partitioning with hierarchical lineage tracking.
 
 ---
 
@@ -39,18 +39,18 @@ With interactive CAD pan-and-zoom previews, geometric centroid calculations, and
   | **Genetic Balanced** | 50 | ~5m | Maximized packing for complex production runs. |
   | **Genetic Maximum** | 200 | ~20m | Ultimate density pass for heavy cutting templates. |
 
-### ⚡ 2. Asynchronous Worker Thread Offloading (New)
+### ⚡ 2. Asynchronous Worker Thread Offloading
 * **Non-Blocking Architecture**: Spawns nesting runs within dedicated Node.js **Worker Threads** (using `worker_threads`).
 * **Main Thread Responsiveness**: CPU-heavy genetic packing calculations are offloaded from the Express event loop. Status polling queries, metadata retrieval, and other concurrent API requests resolve instantly (<5ms) without hanging.
 * **Natural Lifecycle Management**: Sockets and database references are terminated naturally upon worker completion, eliminating Postgres connection leaks.
 
-### ♻️ 3. Remnant Stock Tracking & Closed-Loop Reuse
-* **Auto-Offcut Seed**: Measures sheet coordinates post-run (`Width - maxX`) to record unused rectangular templates.
+### ♻️ 3. Advanced Remnant Stock Tracking & Closed-Loop Reuse
+* **Auto-Partitioning Leftovers**: Measures leftover sheet boundaries and partitions them into usable rectangular stock sheets and remaining reusable scrap pieces.
 * **Dynamic Valuation**: Automatically evaluates remnant offcut recovery value using material-specific scrap prices.
 * **Remnant Recommendation**: Matches compatible remnants for upcoming projects based on material type, thickness, and nesting area.
 * **Loop Closure**: "Use Remnant" toggles dimensions override, locks standard inputs, runs the nesting job strictly on the remnant, and flags it as `used = true`.
 
-### 💰 4. Material Management & Cost Estimation V1
+### 💰 4. Material Management & Cost Estimation
 * **Material Master Table**:
   | Material | Density (kg/m³) | Price (₹/kg) | Scrap Rate (₹/kg) |
   | :--- | :---: | :---: | :---: |
@@ -65,7 +65,7 @@ With interactive CAD pan-and-zoom previews, geometric centroid calculations, and
 * Powered by Google Gemini (`gemini-2.5-flash`) via the new `@google/genai` SDK.
 * Automatically evaluates nesting runs to output structural JSON summaries, recommendations, and estimated savings.
 
-### 📦 6. Professional Export Center V1
+### 📦 6. Professional Export Center
 * **Single-Click Industrial Outputs**:
   * **📄 PDF Manufacturing Report**: A premium, print-ready 8-page industrial engineering report containing a centered cover sheet, dynamic layout analyses (advantages, limitations, and metrics tables for Layouts 1, 2, and 3), centered layout visualization drawings, a side-by-side comparative summary table highlighting best-performing metrics, and overall engineering recommendations and conclusions.
   * **🖼 SVG Drawing Layout**: Professional Vector SVG layout containing scaled boundaries, part numbers, and high-fidelity geometries ready for downstream CAD importing.
@@ -104,100 +104,126 @@ With interactive CAD pan-and-zoom previews, geometric centroid calculations, and
 
 ---
 
+## 🛠️ Technology Stack
+
+* **Frontend**: React SPA, Vite, Material-UI (MUI), Canvas-based Vector CAD viewer (supporting zoom, pan, and interactive drag-and-drop manual editing).
+* **Backend**: Node.js, Express, Worker Threads (offloaded genetic runs).
+* **Database**: PostgreSQL (material master table, projects registry, file metadata database, nesting jobs tracker, and hierarchical remnant inventory table).
+* **Nesting Core & Geometry**: Minkowski NFP calculate addons (`@deepnest/calculate-nfp`), Clipper Lib bounds collision detection, and custom polygon operations.
+* **Generative AI**: Google Gemini API (`gemini-2.5-flash`) via the official `@google/genai` SDK.
+* **Export Generators**: `pdfkit` (manufacturing reports), `xmlbuilder2` (scalable vector drawings).
+
+---
+
 ## 🔄 Current Nesting Workflow
 
 ```mermaid
 flowchart TD
     A[Upload DXF/SVG Files] --> B[Material & Sheet Setup / Remnant Recommendation]
     B --> C[Review parameters checklist page]
-    C --> D[Trigger Nesting Job]
-    D -->|Spawn Worker Thread| E[Non-Blocking Solver runs in background]
-    E -->|Progress Updates| F[Processing Dashboard Polling]
-    E -->|Finished| G[Redirect to comparative Results page]
-    G --> H[Interactive CAD Sheet View]
-    H -->|Click Adjust| I[Manual Nesting Editor]
-    I -->|Save Changes| J[Updated Placements saved to DB]
-    G --> K[AI Advisor Recommendations]
-    G --> L[PDF, SVG, JSON Downloads]
+    C -->|Trigger Pre-Nest Suitability Checker| D[Lightweight BLF Simulator runs]
+    D -->|Shows yield & fit check| E[Review / Modify Parts if needed]
+    E --> F[Trigger Nesting Job]
+    F -->|Spawn Worker Thread| G[Non-Blocking Solver runs in background]
+    G -->|Progress Updates| H[Processing Dashboard Polling]
+    G -->|Finished| I[Redirect to comparative Results page]
+    I --> J[Interactive CAD Sheet View]
+    J -->|Click Adjust| K[Manual Nesting Editor]
+    K -->|Save Changes| L[Updated Placements saved to DB]
+    I --> M[AI Advisor Recommendations]
+    I --> N[PDF, SVG, JSON Downloads]
 ```
 
 1. **Upload Geometry Files:** Upload DXF parts library to a project.
 2. **Setup Sheet & Material:** Define material thickness and type, and pick a standard plate size or select a remnant recommended from inventory.
 3. **Review Setup Parameters:** Confirm geometry counts and sizes on the review checklist.
-4. **Trigger Background Nesting:** The Express route spawns a non-blocking Worker Thread to run calculations.
-5. **Monitor Polling Progress:** The Processing dashboard retrieves live, steady updates every 1.5 seconds.
-6. **Compare and Adjust Layouts:** Review layouts on the results page, make manual drag-and-drop tweaks if desired, and export industrial PDF reports or SVG layouts.
+4. **Pre-Nest Suitability Check:** The interactive BLF Simulator performs a layout suitability verification, showing estimated capacity and yield.
+5. **Trigger Background Nesting:** The Express route spawns a non-blocking Worker Thread to run calculations.
+6. **Monitor Polling Progress:** The Processing dashboard retrieves live, steady updates every 1.5 seconds.
+7. **Compare and Adjust Layouts:** Review layouts on the results page, make manual drag-and-drop tweaks if desired, and export industrial PDF reports or SVG layouts.
 
 ---
 
-## 📂 Project Architecture
+## 📂 Project Structure
 
 ```
 smartnest-ai/
 ├── .agents/                  # Workspace customized behavior rules
 ├── backend/                  # Node.js + Express API Server
 │   ├── src/
-│   │   ├── config/           # Database configurations, schema & migrations
-│   │   ├── controllers/      # Route handler controllers (Nesting, Remnants, Projects, AI)
+│   │   ├── config/           # Database configurations, schemas & migrations
+│   │   ├── controllers/      # Route handler controllers (Nesting, Remnants, Projects, Files, AI)
 │   │   ├── routes/           # REST Endpoint routes
-│   │   ├── services/         # Core business logic (Nesting, Costing, AI Advisor)
+│   │   ├── services/         # Core business logic (Nesting, Costing, AI Advisor, Clipper subtraction)
 │   │   └── workers/          # Async Worker Thread handlers (Nesting worker)
-│   ├── verify_remnant_reuse.js
+│   ├── verify_remnant_tracking.js
 │   └── verify_ai_advisor.js
 ├── frontend/                 # React SPA (Vite + MUI)
 │   ├── src/
-│   │   ├── components/       # Visual CAD, toolbar and statistics components
+│   │   ├── components/       # Visual CAD, layout canvas, and statistics components
 │   │   ├── layouts/          # Dashboard Navigation Shells
-│   │   ├── pages/            # View pages (Projects, Details, Processing, Results, Remnants)
+│   │   ├── pages/            # View pages (Projects, Details, Processing, Results, Remnants, RemnantDetail)
 │   │   └── services/         # Axios API Client Wrapper
+│   └── index.html
 └── README.md
 ```
 
-```mermaid
-graph TD
-    A[React SPA / Vite] -->|REST API| B[Node.js / Express Backend]
-    B -->|Spawns| W[Nesting Worker Thread]
-    W -->|Calculates Minkowski NFPs| D[C++ Clipper & Addons]
-    B -->|Database Queries| C[(PostgreSQL)]
-    B -->|Gen AI SDK| E[Google Gemini AI]
-    B -->|Auto-Remnants| F[Remnants Inventory]
-```
+---
+
+## 🎨 Preview Page and Result Page Improvements
+
+### 🔍 Pre-Nesting Suitability Analyzer
+* Located directly in the **Review Nest Job** checklist configuration page.
+* Executes a lightweight **Bottom-Left-Fill (BLF)** packing simulator in JavaScript before starting the heavy genetic optimizer.
+* Displays:
+  * **Estimated Packing Yield (%)**: A visual progress bar depicting the estimated sheet utilization based on uploaded parts.
+  * **Estimated Waste / Leftover Area**: Calculated area (in mm² or m²) predicted to remain unused.
+  * **Part Feasibility Checklist**: Identifies which parts are too large for the current sheet dimensions and shows a fitted count ratio (e.g. `Fitted 2/2` or `Too Large`).
+
+### 📐 Live Custom Remnant Geometry Rendering
+* The vector `LayoutCanvas` now supports rendering custom, irregular stock sheet shapes (e.g., remnants containing complex polygonal boundaries or internal holes) instead of simple rectangles.
+* Leverages SVG `<path>` elements with `fillRule="evenodd"` to draw the exact boundaries and inner cutouts.
+* Custom geometries are rendered dynamically on the **Review Nest Job** page, the **Nesting Processing Dashboard** (live polling), and the comparative **Results Dashboard**.
 
 ---
 
-## 🌐 API Endpoints Reference
+## ♻️ Enhanced Remnant Management and Visualization
 
-### 1. Projects
-* `GET /api/projects` - List all projects.
-* `GET /api/projects/:id` - Fetch details for a specific project.
-* `POST /api/projects` - Create a new project.
-* `DELETE /api/projects/:id` - Delete project.
+### 🛠️ Advanced Remnant Database Registry
+* Supports detailed tracking of remnant stock including:
+  * `geometry` (JSONB) - Exact coordinates tracking the outer profile and inner cut-out holes.
+  * `svg_preview` (TEXT) - File path to the auto-generated vector visualization drawing.
+  * `parent_remnant_id` (INTEGER) - Tracks nested lineage to link child remnants back to parent stock.
+  * `status` (VARCHAR) - Tristate asset tracking: `Available`, `Consumed`, `Reserved`.
+  * `original_sheet` (VARCHAR) - Stores reference dimensions of the original source stock.
+  * `is_scrap` (BOOLEAN) - Flag separating usable rectangular offcuts from irregular scrap.
 
-### 2. Files
-* `GET /api/files/project/:projectId` - Get files uploaded for a project.
-* `POST /api/files/upload` - Upload file (DXF/SVG) and set quantity.
-* `PUT /api/files/:id/quantity` - Update quantity of a part.
-* `DELETE /api/files/:id` - Delete uploaded part.
+### 📐 Parent-Child Partitioning Engine
+* Uses backend Clipper subtraction algorithms to calculate the exact shape of unused material.
+* Splits the leftover area into:
+  1. A **Consumed Parent Remnant**: Stored immediately to represent the total raw leftover geometry.
+  2. A **Usable Child Rectangular Remnant**: Automatically carved out from the leftover shape based on dimensions thresholds (min 50x50mm, area >= 5000 mm²).
+  3. **Scrap Remnants**: Stores irregular offcuts that exceed threshold requirements but are too irregular to fit standard rectangular envelopes.
 
-### 3. Nesting Jobs
-* `POST /api/nesting/start/:projectId` - Initialize background nesting run.
-* `GET /api/nesting/status/:jobId` - Check polling status and pipeline progress metrics.
-* `GET /api/nesting/result/:jobId` - Retrieve completed nesting layout parameters, comparative coordinates, and statistics.
-* `GET /api/nesting/layout/:jobId` - Get current placements for manual adjustments.
-* `PUT /api/nesting/layout/:jobId` - Save custom layout placements.
-* `POST /api/nesting/reset/:jobId` - Discard manual edits and reset layout back to Auto Nest.
-* `POST /api/nesting/regenerate/:jobId` - Re-run the genetic solver.
+### 🌳 Genealogy Lineage Visualization Tree
+* Available on the dedicated **Remnant Details page** (`/remnants/:id`).
+* Visualizes the complete history of an offcut, showing a connected flowchart tree:
+  * **Parent Stock**: Displays if the remnant was cut from an original standard sheet or nested inside a parent remnant.
+  * **Active Remnant**: Details the currently selected asset.
+  * **Child Remnants**: Renders cards for all descendant remnants subsequently generated and harvested from this sheet.
 
-### 4. Remnants
-* `GET /api/remnants` - Fetch remnant inventory.
-* `GET /api/remnants/recommend/:projectId` - Recommend best-fit remnants for a project.
+### ⚡ Workspace Action Modals
+* **Twin Action Buttons**: Use Remnant (Standard) vs Use Scrap (Irregular).
+* **Workspace Setup Modal**: Allows a shop-floor operator to either:
+  * **Route A (Create New Project)**: Instantly generate a project pre-configured with the remnant's material type, thickness, and boundary size.
+  * **Route B (Import into Project)**: View matching open projects and import the remnant directly as the stock sheet boundary.
 
 ---
 
-## 🛠️ Step-by-Step Installation
+## ⚙️ Setup and Installation
 
 ### 1. Database Setup
-Create a PostgreSQL database named `smartnest_ai` and run the schema queries inside [schema.sql](file:///e:/smartnest-ai/backend/src/config/schema.sql):
+Create a PostgreSQL database named `smartnest_ai` and run the schema queries inside `backend/src/config/schema.sql`:
 ```sql
 CREATE DATABASE smartnest_ai;
 ```
@@ -214,19 +240,62 @@ DB_PASSWORD=your_postgres_password
 GEMINI_API_KEY=your_gemini_api_key
 ```
 
-### 3. Spin Up Services
+### 3. Database Migration
+Run database alterations to update the schema for advanced remnant lifecycles and scrap support:
 ```bash
-# Set up backend server and database
 cd backend
 npm install
-node src/config/migrate.js
-npm run dev
+node src/config/alter_remnants_lifecycle_geometry.js
+node src/config/alter_remnants_scrap_support.js
+```
 
-# In a separate terminal shell, set up frontend client
-cd ../frontend
+### 4. Running the Project
+
+#### Run Backend Server:
+```bash
+cd backend
+npm run dev
+```
+
+#### Run Frontend Client:
+```bash
+cd frontend
 npm install
 npm run dev
 ```
+Open your browser and navigate to `http://localhost:5173`.
+
+---
+
+## 🌐 API Endpoints Reference
+
+### 1. Projects
+* `GET /api/projects` - List all projects.
+* `GET /api/projects/:id` - Fetch details for a specific project.
+* `POST /api/projects` - Create a new project.
+* `POST /api/projects/create-from-remnant` - Create a project matching a remnant's material properties.
+* `DELETE /api/projects/:id` - Delete project.
+
+### 2. Files
+* `GET /api/files/project/:projectId` - Get files uploaded for a project.
+* `POST /api/files/upload` - Upload file (DXF/SVG) and set quantity.
+* `PUT /api/files/:id/quantity` - Update quantity of a part.
+* `DELETE /api/files/:id` - Delete uploaded part.
+
+### 3. Nesting Jobs
+* `POST /api/nesting/start/:projectId` - Initialize background nesting run.
+* `GET /api/nesting/status/:jobId` - Check polling status and pipeline progress metrics.
+* `GET /api/nesting/result/:jobId` - Retrieve completed nesting layout parameters, comparative coordinates, and statistics.
+* `GET /api/nesting/layout/:jobId` - Get current placements for manual adjustments.
+* `PUT /api/nesting/layout/:jobId` - Save custom manual layout placements.
+* `POST /api/nesting/reset/:jobId` - Discard manual edits and reset layout back to Auto Nest.
+* `POST /api/nesting/regenerate/:jobId` - Re-run the genetic solver.
+
+### 4. Remnants
+* `GET /api/remnants` - Fetch remnant inventory list.
+* `GET /api/remnants/:id` - Fetch details for a remnant including parent/child lineage.
+* `GET /api/remnants/recommend/:projectId` - Recommend best-fit remnants for a project.
+* `POST /api/remnants/pre-nest/:projectId` - Run Bottom-Left-Fill simulator pre-nest feasibility check.
 
 ---
 

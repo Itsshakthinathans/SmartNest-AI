@@ -240,6 +240,7 @@ export default function Result() {
   const [sheetY, setSheetY] = useState(10);
   const [sheetWidth, setSheetWidth] = useState(1000);
   const [sheetHeight, setSheetHeight] = useState(1000);
+  const [sheetGeometry, setSheetGeometry] = useState(null);
   
   // Interactive view state
   const [zoom, setZoom] = useState(1);
@@ -884,6 +885,19 @@ export default function Result() {
       if (resData.sheetWidth && resData.sheetHeight) {
         setSheetWidth(resData.sheetWidth);
         setSheetHeight(resData.sheetHeight);
+      }
+
+      if (resData.remnantId) {
+        try {
+          const remRes = await api.getRemnant(resData.remnantId);
+          if (remRes.success && remRes.data && remRes.data.geometry) {
+            setSheetGeometry(remRes.data.geometry);
+          }
+        } catch (remErr) {
+          console.error('[Result] Failed to load remnant geometry:', remErr);
+        }
+      } else {
+        setSheetGeometry(null);
       }
     } catch (err) {
       console.error('Error fetching final result metrics:', err);
@@ -1575,6 +1589,7 @@ export default function Result() {
                   isEditMode={isEditMode}
                   onPlacePart={handlePlacePart}
                   onMovePart={handleMovePart}
+                  sheetGeometry={sheetGeometry}
                 />
               </Paper>
 

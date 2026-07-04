@@ -87,7 +87,8 @@ export default function LayoutCanvas({
   onPlacePart = () => {},
   onMovePart = () => {},
   onRotateSelectedLibraryPart = () => {},
-  onCancelPlacement = () => {}
+  onCancelPlacement = () => {},
+  sheetGeometry = null
 }) {
   const containerRef = useRef(null);
   const [isPanning, setIsPanning] = useState(false);
@@ -326,25 +327,43 @@ export default function LayoutCanvas({
 
         <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
           {/* Sheet boundary background */}
-          <rect
-            x={sheetX}
-            y={sheetY}
-            width={sheetWidth}
-            height={sheetHeight}
-            fill="#12161f"
-            stroke="#4f5b66"
-            strokeWidth="1.5"
-          />
-
-          {/* Grid overlay */}
-          {showGrid && (
+          {sheetGeometry ? (
+            <path
+              d={getPathData(sheetGeometry.outer, sheetGeometry.holes || [])}
+              fill="#12161f"
+              stroke="#0d9488"
+              strokeWidth="2"
+              fillRule="evenodd"
+            />
+          ) : (
             <rect
               x={sheetX}
               y={sheetY}
               width={sheetWidth}
               height={sheetHeight}
-              fill="url(#canvas-grid)"
+              fill="#12161f"
+              stroke="#4f5b66"
+              strokeWidth="1.5"
             />
+          )}
+
+          {/* Grid overlay */}
+          {showGrid && (
+            sheetGeometry ? (
+              <path
+                d={getPathData(sheetGeometry.outer, sheetGeometry.holes || [])}
+                fill="url(#canvas-grid)"
+                fillRule="evenodd"
+              />
+            ) : (
+              <rect
+                x={sheetX}
+                y={sheetY}
+                width={sheetWidth}
+                height={sheetHeight}
+                fill="url(#canvas-grid)"
+              />
+            )
           )}
 
           {/* Render Parsed Polygons / Sheets */}
