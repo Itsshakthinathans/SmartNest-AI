@@ -22,7 +22,7 @@ SmartNest AI is a modern CAD/CAM nesting dashboard designed to optimize sheet la
 With interactive CAD pan-and-zoom previews, geometric centroid calculations, and an embedded Gemini advisor, it bridges the gap between software optimization and physical shop-floor efficiency.
 
 > [!IMPORTANT]
-> **Production Status**: **v1.1-Stable** is fully verified. Recent releases integrate an interactive Manual Nesting Editor, an automated Bottom-Left-Fill Pre-Nest Suitability Analyzer, and geometric remnant stock partitioning with hierarchical lineage tracking.
+> **Production Status**: **v1.2-Stable** is fully verified. Recent releases integrate Layout Finalization, custom irregular remnant geometry packing/nesting, authoritative Clipper collision validation, and robust database inventory tracking.
 
 ---
 
@@ -47,8 +47,9 @@ With interactive CAD pan-and-zoom previews, geometric centroid calculations, and
 ### ♻️ 3. Advanced Remnant Stock Tracking & Closed-Loop Reuse
 * **Auto-Partitioning Leftovers**: Measures leftover sheet boundaries and partitions them into usable rectangular stock sheets and remaining reusable scrap pieces.
 * **Dynamic Valuation**: Automatically evaluates remnant offcut recovery value using material-specific scrap prices.
-* **Remnant Recommendation**: Matches compatible remnants for upcoming projects based on material type, thickness, and nesting area.
-* **Loop Closure**: "Use Remnant" toggles dimensions override, locks standard inputs, runs the nesting job strictly on the remnant, and flags it as `used = true`.
+* **Remnant Recommendation**: Matches compatible remnants for upcoming projects based on material type, thickness, and nesting area. Remnants in draft/consumed states are excluded from recommendations to maintain stock consistency.
+* **Loop Closure**: "Use Remnant" toggles dimensions override, locks standard inputs, runs the nesting job strictly on the remnant, and transitions its status to `Consumed` once finalized.
+* **Custom Boundary Geometry Support**: Stores and handles exact, irregular remnant profiles (outer boundaries and inner holes) in the database. Vector layout canvases and downstream operations render these custom boundaries dynamically using CSS `evenodd` path styling.
 
 ### 💰 4. Material Management & Cost Estimation
 * **Material Master Table**:
@@ -92,7 +93,7 @@ With interactive CAD pan-and-zoom previews, geometric centroid calculations, and
 * **60fps Bounding Box Pre-checks**: Live client-side visual indicators highlight containment:
   * **Green Outline**: Candidate placement is safe and inside the sheet.
   * **Red Outline**: Candidate placement is invalid (overlapping existing parts or sheet borders).
-* **Authoritative Collision Engine**: Leverages backend C++ Clipper routines to authorize final part drops, ensuring precision.
+* **Authoritative Collision Engine**: Leverages backend C++ Clipper routines to authorize final part drops, ensuring precision. Collision checks fully support custom irregular remnant geometries (outer profile and inner holes).
 * **Granular Controls & Keyboard Shortcuts**:
   * **Scroll Wheel / Mouse Wheel**: Rotate candidate parts in 15° steps before placing.
   * **`R` Key**: Rotate candidate parts by 90°.
@@ -101,6 +102,11 @@ With interactive CAD pan-and-zoom previews, geometric centroid calculations, and
 * **Layout State Undo/Redo & Save**:
   * Step backward or forward through placement actions.
   * Live status indicator chips (`● Unsaved Changes` vs `✓ Saved`) track dirty status states dynamically.
+
+### 🔒 10. Nesting Layout Finalization & Locked States
+* **Single-Click Asset Generation**: Operators can finalize a nesting layout using the "Finalize Layout" action. This computes final scrap recovery and locks the layout from accidental edits.
+* **Closed-Loop Status Syncing**: Saves finalized child remnants to active inventory (`Available`) and transitions the parent sheet/remnant to `Consumed`.
+* **Unlock and Reset**: Trying to adjust a finalized layout triggers a prompt asking to restore the layout's status back to Draft, preventing accidental override of active production sheets.
 
 ---
 
@@ -281,6 +287,7 @@ Open your browser and navigate to `http://localhost:5173`.
 * `POST /api/files/upload` - Upload file (DXF/SVG) and set quantity.
 * `PUT /api/files/:id/quantity` - Update quantity of a part.
 * `DELETE /api/files/:id` - Delete uploaded part.
+* `GET /api/files/geometry/:id` - Retrieve parsed SVG/DXF geometry points (outer bounds, holes, centroid, and bounding box).
 
 ### 3. Nesting Jobs
 * `POST /api/nesting/start/:projectId` - Initialize background nesting run.
@@ -290,6 +297,7 @@ Open your browser and navigate to `http://localhost:5173`.
 * `PUT /api/nesting/layout/:jobId` - Save custom manual layout placements.
 * `POST /api/nesting/reset/:jobId` - Discard manual edits and reset layout back to Auto Nest.
 * `POST /api/nesting/regenerate/:jobId` - Re-run the genetic solver.
+* `POST /api/nesting/finalize/:jobId` - Finalize layout placements, update scrap value, and transition parent and child remnants status.
 
 ### 4. Remnants
 * `GET /api/remnants` - Fetch remnant inventory list.
@@ -307,5 +315,4 @@ Open your browser and navigate to `http://localhost:5173`.
 
 ## 🚀 Planned Future Enhancements
 * **Multi-Sheet Nesting:** Optimize layout packing across multiple sequential plates.
-* **Advanced Offcut Outlines:** Store exact, complex polygonal remnant shapes in database rather than simple rectangular bounds.
 * **Server-Side Queue Manager:** Add queue-based throttling for running worker jobs.

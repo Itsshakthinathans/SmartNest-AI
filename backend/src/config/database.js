@@ -25,6 +25,12 @@ const testConnection = async () => {
       SELECT setval('users_id_seq', COALESCE((SELECT MAX(id) FROM users), 1))
     `);
     console.log('Default user (ID: 1) verified/seeded.');
+
+    // Add finalized column to nest_jobs if not exists
+    await pool.query(`
+      ALTER TABLE nest_jobs ADD COLUMN IF NOT EXISTS finalized BOOLEAN DEFAULT FALSE
+    `);
+    console.log('nest_jobs.finalized column verified/created.');
   } catch (err) {
     console.error('PostgreSQL Connection/Seeding Error:');
     console.error(err.message);

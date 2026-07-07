@@ -23,7 +23,10 @@ import {
   TextField,
   Radio,
   RadioGroup,
-  FormControlLabel
+  FormControlLabel,
+  Tabs,
+  Tab,
+  Tooltip
 } from '@mui/material';
 import {
   ArrowBack as ArrowBackIcon,
@@ -35,9 +38,89 @@ import {
   DeviceHub as LineageIcon,
   Inventory as InventoryIcon,
   TrendingDown as ConsumptionIcon,
-  PlayArrow as PlayIcon
+  PlayArrow as PlayIcon,
+  ZoomIn as ZoomInIcon,
+  ZoomOut as ZoomOutIcon,
+  RestartAlt as ResetIcon
 } from '@mui/icons-material';
 import api from '../services/api';
+
+// Helper to parse geometry from JSON string or object
+const parseGeometry = (geom) => {
+  if (!geom) return null;
+  if (typeof geom === 'string') {
+    try {
+      return JSON.parse(geom);
+    } catch (e) {
+      console.error('Failed to parse geometry string:', e);
+      return null;
+    }
+  }
+  return geom;
+};
+
+// Helper to compute bounding box of geometry
+const getGeometryBBox = (geom) => {
+  const parsed = parseGeometry(geom);
+  if (!parsed || !parsed.outer || parsed.outer.length === 0) {
+    return { minX: 0, minY: 0, maxX: 100, maxY: 100, width: 100, height: 100 };
+  }
+  let minX = Infinity, minY = Infinity;
+  let maxX = -Infinity, maxY = -Infinity;
+  parsed.outer.forEach(pt => {
+    if (pt.x < minX) minX = pt.x;
+    if (pt.y < minY) minY = pt.y;
+    if (pt.x > maxX) maxX = pt.x;
+    if (pt.y > maxY) maxY = pt.y;
+  });
+  if (minX === Infinity) {
+    return { minX: 0, minY: 0, maxX: 100, maxY: 100, width: 100, height: 100 };
+  }
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width: maxX - minX,
+    height: maxY - minY
+  };
+};
+
+// Helper to build path data string for SVG
+const buildPathData = (geom) => {
+  const parsed = parseGeometry(geom);
+  if (!parsed || !parsed.outer || parsed.outer.length === 0) return '';
+  
+  const outerPath = parsed.outer.map(pt => `${pt.x},${pt.y}`).join(' L ');
+  let d = `M ${outerPath} Z`;
+  
+  if (parsed.holes && parsed.holes.length > 0) {
+    parsed.holes.forEach(hole => {
+      if (hole && hole.length > 0) {
+        const holePath = hole.map(pt => `${pt.x},${pt.y}`).join(' L ');
+        d += ` M ${holePath} Z`;
+      }
+    });
+  }
+  return d;
+};
+
+// Helper for historical remnants lacking geometry fields
+const getFallbackGeometry = (width, height) => {
+  const w = parseFloat(width) || 1000;
+  const h = parseFloat(height) || 1000;
+  return {
+    outer: [
+      { x: 0, y: 0 },
+      { x: w, y: 0 },
+      { x: w, y: h },
+      { x: 0, y: h }
+    ],
+    holes: [],
+    width: w,
+    height: h
+  };
+};
 
 export default function RemnantDetail() {
   const { id } = useParams();
@@ -48,8 +131,14 @@ export default function RemnantDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  // Material Workspace views state
+  const [activeView, setActiveView] = useState('leftover');
+  const [selectedScrapId, setSelectedScrapId] = useState('');
+  const [zoomScale, setZoomScale] = useState(1);
+
   // Workspace Modal state
   const [modalOpen, setModalOpen] = useState(false);
+  const [modalTargetId, setModalTargetId] = useState(null);
   const [useExisting, setUseExisting] = useState(false);
   const [projects, setProjects] = useState([]);
   const [loadingProjects, setLoadingProjects] = useState(false);
@@ -70,6 +159,16 @@ export default function RemnantDetail() {
         setRemnant(res.data);
         if (res.data.svg_preview) {
           await loadSvgContent(res.data.svg_preview);
+        }
+        
+        // Auto-select initial view tab based on loaded remnant asset
+        if (res.data.is_scrap) {
+          setActiveView('scrap');
+          setSelectedScrapId(res.data.id);
+        } else if (res.data.status === 'Consumed') {
+          setActiveView('leftover');
+        } else {
+          setActiveView('rectangular');
         }
       } else {
         throw new Error('Failed to load remnant details.');
@@ -97,16 +196,29 @@ export default function RemnantDetail() {
     }
   }
 
-  const handleOpenModal = async () => {
+  const handleOpenModal = async (targetId) => {
     setModalOpen(true);
-    setNewProjectName(`Project from Remnant RM-${String(remnant.id).padStart(4, '0')}`);
+    setModalTargetId(targetId);
+    
+    // Resolve matching remnant details to show descriptive name
+    let targetRem = remnant;
+    if (targetId !== remnant.id) {
+      if (remnant.parent?.id === targetId) {
+        targetRem = remnant.parent;
+      } else if (remnant.children) {
+        targetRem = remnant.children.find(c => c.id === targetId) || remnant;
+      }
+    }
+
+    const typePrefix = targetRem.is_scrap ? 'SP' : 'RM';
+    setNewProjectName(`Project from Stock ${typePrefix}-${String(targetRem.id).padStart(4, '0')}`);
     setLoadingProjects(true);
     try {
       const res = await api.getProjects();
       if (res.success && res.data) {
         const matching = res.data.filter(p => 
-          p.materialType === remnant.material_type && 
-          Math.abs(parseFloat(p.materialThickness) - parseFloat(remnant.material_thickness)) < 0.01
+          p.materialType === targetRem.material_type && 
+          Math.abs(parseFloat(p.materialThickness) - parseFloat(targetRem.material_thickness)) < 0.01
         );
         setProjects(matching);
         if (matching.length > 0) {
@@ -125,12 +237,13 @@ export default function RemnantDetail() {
 
   const handleProceed = async () => {
     try {
+      const useId = modalTargetId || remnant.id;
       if (useExisting && selectedProjectId) {
-        navigate(`/projects/${selectedProjectId}?remnantId=${remnant.id}`);
+        navigate(`/projects/${selectedProjectId}?remnantId=${useId}`);
       } else {
-        const res = await api.createProjectFromRemnant(remnant.id, newProjectName);
+        const res = await api.createProjectFromRemnant(useId, newProjectName);
         if (res.success && res.data) {
-          navigate(`/projects/${res.data.id}?remnantId=${remnant.id}`);
+          navigate(`/projects/${res.data.id}?remnantId=${useId}`);
         } else {
           throw new Error('Failed to create new project from remnant.');
         }
@@ -209,7 +322,10 @@ export default function RemnantDetail() {
         <Box>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
             <Typography variant="h4" sx={{ fontWeight: 800, color: '#ffffff' }}>
-              {`Remnant Sheet RM-${String(remnant.id).padStart(4, '0')}`}
+              {remnant.is_scrap 
+                ? `Scrap Sheet SP-${String(remnant.id).padStart(4, '0')}` 
+                : `Remnant Sheet RM-${String(remnant.id).padStart(4, '0')}`
+              }
             </Typography>
             <Chip
               size="small"
@@ -243,226 +359,554 @@ export default function RemnantDetail() {
         </Box>
       </Box>
 
-      {/* Geometry Canvas & Active actions */}
-      <Grid container spacing={4}>
-        {/* Geometry Canvas & Twin actions */}
-        <Grid item xs={12} md={7}>
-          <Paper 
-            sx={{ 
-              p: 3, 
-              bgcolor: '#0f1319', 
-              border: '1px solid rgba(255, 255, 255, 0.06)', 
-              borderRadius: '16px',
-              display: 'flex',
-              flexDirection: 'column'
-            }}
-          >
-            <Typography variant="subtitle1" sx={{ color: '#ffffff', fontWeight: 700, mb: 2 }}>
-              GEOMETRY CANVAS
-            </Typography>
-            
-            <Box 
-              sx={{ 
-                height: '350px',
-                bgcolor: '#0a0d14', 
-                borderRadius: '8px', 
-                border: '1px solid rgba(255, 255, 255, 0.03)',
-                display: 'flex',
-                justifyContent: 'center',
-                alignItems: 'center',
-                p: 3,
-                overflow: 'auto',
-                position: 'relative',
-                '& svg': {
-                  maxWidth: '90%',
-                  maxHeight: '90%',
-                  width: 'auto',
-                  height: 'auto'
-                }
-              }}
-            >
-              {svgContent ? (
-                <div 
-                  style={{ width: '100%', height: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center' }}
-                  dangerouslySetInnerHTML={{ __html: svgContent }}
-                />
-              ) : (
-                <Stack spacing={1} alignItems="center">
-                  <Box sx={{ border: '1px dashed rgba(255, 255, 255, 0.15)', p: 3, borderRadius: '8px', bgcolor: 'rgba(255,255,255,0.01)' }}>
-                    <DimensionsIcon sx={{ fontSize: '32px', color: '#565f89' }} />
+      {/* Resolve parents/children family mapping */}
+      {(() => {
+        const parentRemnant = remnant.parent_remnant_id ? remnant.parent : remnant;
+        const isParentLoaded = !remnant.parent_remnant_id;
+        
+        // Find rectangular child remnant
+        let rectRemnant = null;
+        if (!remnant.is_scrap) {
+          rectRemnant = remnant;
+        } else if (parentRemnant && parentRemnant.children) {
+          rectRemnant = parentRemnant.children.find(c => !c.is_scrap) || null;
+        }
+
+        // Find scrap children remnants
+        let scrapRemnants = [];
+        if (remnant.is_scrap) {
+          scrapRemnants = [remnant];
+        } else if (parentRemnant && parentRemnant.children) {
+          scrapRemnants = parentRemnant.children.filter(c => c.is_scrap);
+        }
+
+        // Active scrap piece selection
+        const activeScrap = scrapRemnants.find(s => s.id === selectedScrapId) || scrapRemnants[0] || null;
+
+        // Resolve active geometry & bounding box & viewport settings
+        let activeGeometry = null;
+        let activeSvgContent = '';
+        
+        if (activeView === 'leftover' || activeView === 'partition') {
+          activeGeometry = parentRemnant ? parseGeometry(parentRemnant.geometry) : null;
+          if (!activeGeometry && parentRemnant) {
+            if (svgContent) {
+              activeSvgContent = svgContent;
+            } else {
+              activeGeometry = getFallbackGeometry(parentRemnant.remaining_width, parentRemnant.remaining_height);
+            }
+          }
+        } else if (activeView === 'rectangular') {
+          activeGeometry = rectRemnant ? parseGeometry(rectRemnant.geometry) : null;
+          if (!activeGeometry && rectRemnant) {
+            activeGeometry = getFallbackGeometry(rectRemnant.remaining_width, rectRemnant.remaining_height);
+          }
+        } else if (activeView === 'scrap') {
+          activeGeometry = activeScrap ? parseGeometry(activeScrap.geometry) : null;
+          if (!activeGeometry && activeScrap) {
+            activeGeometry = getFallbackGeometry(activeScrap.remaining_width, activeScrap.remaining_height);
+          }
+        }
+
+        const bbox = getGeometryBBox(activeGeometry);
+        const paddingVal = 10;
+        const viewBox = `${bbox.minX - paddingVal} ${bbox.minY - paddingVal} ${bbox.width + paddingVal * 2} ${bbox.height + paddingVal * 2}`;
+
+        // Dynamically resolve metadata based on active view
+        let metadataTitle = 'ASSET METADATA & SPECS';
+        let metadataDetails = {
+          sourceType: '',
+          dimensions: '',
+          area: 0,
+          material: remnant.material_type,
+          thickness: remnant.material_thickness,
+          value: 0,
+          status: 'Available',
+          idLabel: ''
+        };
+
+        if (activeView === 'leftover') {
+          metadataTitle = 'ORIGINAL LEFTOVER METADATA';
+          if (parentRemnant) {
+            metadataDetails = {
+              sourceType: 'Original Leftover Region',
+              dimensions: `${parentRemnant.remaining_width} x ${parentRemnant.remaining_height} mm`,
+              area: parentRemnant.remaining_area,
+              material: parentRemnant.material_type,
+              thickness: parentRemnant.material_thickness,
+              value: parentRemnant.estimated_value,
+              status: parentRemnant.status,
+              idLabel: `Leftover ID: RM-${String(parentRemnant.id).padStart(4, '0')}`
+            };
+          }
+        } else if (activeView === 'partition') {
+          metadataTitle = 'SMARTNEST PARTITION MATRIX';
+          if (parentRemnant) {
+            metadataDetails = {
+              sourceType: 'Partition Layout (Reference)',
+              dimensions: `${parentRemnant.remaining_width} x ${parentRemnant.remaining_height} mm`,
+              area: parentRemnant.remaining_area,
+              material: parentRemnant.material_type,
+              thickness: parentRemnant.material_thickness,
+              value: parentRemnant.estimated_value,
+              status: 'Partitioned',
+              idLabel: `Parent Leftover RM-${String(parentRemnant.id).padStart(4, '0')}`
+            };
+          }
+        } else if (activeView === 'rectangular') {
+          metadataTitle = 'RECTANGULAR REMNANT METADATA';
+          if (rectRemnant) {
+            metadataDetails = {
+              sourceType: 'Computed Reusable Rectangle',
+              dimensions: `${rectRemnant.remaining_width} x ${rectRemnant.remaining_height} mm`,
+              area: rectRemnant.remaining_area,
+              material: rectRemnant.material_type,
+              thickness: rectRemnant.material_thickness,
+              value: rectRemnant.estimated_value,
+              status: rectRemnant.status,
+              idLabel: `Remnant ID: RM-${String(rectRemnant.id).padStart(4, '0')}`
+            };
+          } else {
+            metadataDetails = { sourceType: 'None Available' };
+          }
+        } else if (activeView === 'scrap') {
+          metadataTitle = 'IRREGULAR SCRAP METADATA';
+          if (activeScrap) {
+            metadataDetails = {
+              sourceType: 'Usable Irregular Scrap',
+              dimensions: `${activeScrap.remaining_width} x ${activeScrap.remaining_height} mm`,
+              area: activeScrap.remaining_area,
+              material: activeScrap.material_type,
+              thickness: activeScrap.material_thickness,
+              value: activeScrap.estimated_value,
+              status: activeScrap.status,
+              idLabel: `Scrap ID: SP-${String(activeScrap.id).padStart(4, '0')}`
+            };
+          } else {
+            metadataDetails = { sourceType: 'None Available' };
+          }
+        }
+
+        return (
+          <Grid container spacing={4}>
+            {/* Geometry Canvas & Tab View */}
+            <Grid item xs={12} md={7}>
+              <Paper 
+                sx={{ 
+                  p: 3, 
+                  bgcolor: '#0f1319', 
+                  border: '1px solid rgba(255, 255, 255, 0.06)', 
+                  borderRadius: '16px',
+                  display: 'flex',
+                  flexDirection: 'column'
+                }}
+              >
+                <Typography variant="subtitle1" sx={{ color: '#ffffff', fontWeight: 700, mb: 1 }}>
+                  GEOMETRY INSPECTION WORKSPACE
+                </Typography>
+
+                <Box sx={{ borderBottom: 1, borderColor: 'rgba(255, 255, 255, 0.08)', mb: 2 }}>
+                  <Tabs
+                    value={activeView}
+                    onChange={(e, val) => {
+                      setActiveView(val);
+                      setZoomScale(1); // reset zoom on view change
+                    }}
+                    textColor="primary"
+                    indicatorColor="primary"
+                    variant="scrollable"
+                    scrollButtons="auto"
+                    sx={{
+                      minHeight: '36px',
+                      '& .MuiTab-root': {
+                        color: '#a9b1d6',
+                        textTransform: 'none',
+                        fontWeight: 700,
+                        fontSize: '0.8rem',
+                        minWidth: 'auto',
+                        px: 2,
+                        py: 0.5,
+                        minHeight: '36px',
+                        '&.Mui-selected': {
+                          color: '#0d9488',
+                        }
+                      }
+                    }}
+                  >
+                    <Tab label="Original Leftover" value="leftover" />
+                    <Tab label="Partition View" value="partition" />
+                    <Tab label="Usable Rectangle" value="rectangular" disabled={!rectRemnant} />
+                    <Tab label="Scrap Pieces" value="scrap" disabled={scrapRemnants.length === 0} />
+                  </Tabs>
+                </Box>
+                
+                <Box 
+                  sx={{ 
+                    height: '350px',
+                    bgcolor: '#0a0d14', 
+                    borderRadius: '8px', 
+                    border: '1px solid rgba(255, 255, 255, 0.03)',
+                    display: 'flex',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    p: 3,
+                    overflow: 'hidden',
+                    position: 'relative'
+                  }}
+                >
+                  {/* Zoom & Reset View Controls */}
+                  <Box sx={{ position: 'absolute', right: 12, top: 12, display: 'flex', gap: 0.5, zIndex: 10 }}>
+                    <Tooltip title="Zoom In">
+                      <IconButton
+                        size="small"
+                        onClick={() => setZoomScale(z => Math.min(5, z * 1.2))}
+                        sx={{ color: '#a9b1d6', bgcolor: 'rgba(255,255,255,0.02)', '&:hover': { bgcolor: 'rgba(255,255,255,0.05)' } }}
+                      >
+                        <ZoomInIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Zoom Out">
+                      <IconButton
+                        size="small"
+                        onClick={() => setZoomScale(z => Math.max(0.5, z / 1.2))}
+                        sx={{ color: '#a9b1d6', bgcolor: 'rgba(255,255,255,0.02)', '&:hover': { bgcolor: 'rgba(255,255,255,0.05)' } }}
+                      >
+                        <ZoomOutIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Reset View">
+                      <IconButton
+                        size="small"
+                        onClick={() => setZoomScale(1)}
+                        sx={{ color: '#a9b1d6', bgcolor: 'rgba(255,255,255,0.02)', '&:hover': { bgcolor: 'rgba(255,255,255,0.05)' } }}
+                      >
+                        <ResetIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
                   </Box>
-                  <Typography variant="caption" sx={{ color: '#565f89', textAlign: 'center' }}>
-                    Previewing Rectangular Boundary:<br />
-                    {remnant.remaining_width} x {remnant.remaining_height} mm
+
+                  <Box
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      display: 'flex',
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      transform: `scale(${zoomScale})`,
+                      transformOrigin: 'center center',
+                      transition: 'transform 0.2s ease'
+                    }}
+                  >
+                    {activeGeometry ? (
+                      <svg
+                        width="100%"
+                        height="100%"
+                        viewBox={viewBox}
+                        style={{ maxWidth: '100%', maxHeight: '100%', width: 'auto', height: 'auto' }}
+                      >
+                        {activeView === 'leftover' && activeGeometry && (
+                          <path d={buildPathData(activeGeometry)} fill="rgba(13, 148, 136, 0.15)" stroke="#0d9488" strokeWidth="2" fillRule="evenodd" />
+                        )}
+                        {activeView === 'partition' && activeGeometry && (
+                          <>
+                            {/* Parent background outline */}
+                            <path d={buildPathData(activeGeometry)} fill="rgba(255, 255, 255, 0.02)" stroke="#565f89" strokeWidth="1.5" strokeDasharray="4 4" fillRule="evenodd" />
+                            {/* Usable Rectangle overlay */}
+                            {rectRemnant && rectRemnant.geometry && (
+                              <path d={buildPathData(rectRemnant.geometry)} fill="rgba(13, 148, 136, 0.2)" stroke="#0d9488" strokeWidth="2" fillRule="evenodd" />
+                            )}
+                            {/* Scrap overlay */}
+                            {scrapRemnants.map(s => s.geometry && (
+                              <path key={s.id} d={buildPathData(s.geometry)} fill="rgba(224, 175, 104, 0.18)" stroke="#e0af68" strokeWidth="2" fillRule="evenodd" />
+                            ))}
+                          </>
+                        )}
+                        {activeView === 'rectangular' && activeGeometry && (
+                          <path d={buildPathData(activeGeometry)} fill="rgba(13, 148, 136, 0.15)" stroke="#0d9488" strokeWidth="2" fillRule="evenodd" />
+                        )}
+                        {activeView === 'scrap' && activeGeometry && (
+                          <path d={buildPathData(activeGeometry)} fill="rgba(224, 175, 104, 0.15)" stroke="#e0af68" strokeWidth="2" fillRule="evenodd" />
+                        )}
+                      </svg>
+                    ) : activeSvgContent ? (
+                      <div 
+                        style={{ width: '100%', height: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center' }}
+                        dangerouslySetInnerHTML={{ __html: activeSvgContent }}
+                      />
+                    ) : (
+                      <Stack spacing={1} alignItems="center">
+                        <Box sx={{ border: '1px dashed rgba(255, 255, 255, 0.15)', p: 3, borderRadius: '8px', bgcolor: 'rgba(255,255,255,0.01)' }}>
+                          <DimensionsIcon sx={{ fontSize: '32px', color: '#565f89' }} />
+                        </Box>
+                        <Typography variant="caption" sx={{ color: '#565f89', textAlign: 'center' }}>
+                          Previewing Rectangular Boundary:<br />
+                          {remnant.remaining_width} x {remnant.remaining_height} mm
+                        </Typography>
+                      </Stack>
+                    )}
+                  </Box>
+                </Box>
+
+                {/* Partition Legend */}
+                {activeView === 'partition' && (
+                  <Box sx={{ display: 'flex', gap: 3, mt: 1.5, justifyContent: 'center', flexWrap: 'wrap' }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Box sx={{ width: 12, height: 12, bgcolor: 'rgba(255, 255, 255, 0.02)', border: '1.5px dashed #565f89' }} />
+                      <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 600 }}>Original Leftover Boundary</Typography>
+                    </Box>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Box sx={{ width: 12, height: 12, bgcolor: 'rgba(13, 148, 136, 0.2)', border: '1.5px solid #0d9488' }} />
+                      <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 600 }}>Usable Rectangular Remnant</Typography>
+                    </Box>
+                    {scrapRemnants.length > 0 && (
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <Box sx={{ width: 12, height: 12, bgcolor: 'rgba(224, 175, 104, 0.18)', border: '1.5px solid #e0af68' }} />
+                        <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 600 }}>Scrap Pieces</Typography>
+                      </Box>
+                    )}
+                  </Box>
+                )}
+
+                {/* Workspace Actions Panel */}
+                <Box sx={{ mt: 3, borderTop: '1px solid rgba(255, 255, 255, 0.08)', pt: 3 }}>
+                  <Typography variant="subtitle2" sx={{ color: '#565f89', mb: 2, fontWeight: 700 }}>
+                    WORKSPACE ACTIONS
                   </Typography>
-                </Stack>
-              )}
-            </Box>
 
-            {/* Twin Actions Panel */}
-            <Box sx={{ mt: 3, borderTop: '1px solid rgba(255, 255, 255, 0.08)', pt: 3 }}>
-              <Typography variant="subtitle2" sx={{ color: '#565f89', mb: 2, fontWeight: 700 }}>
-                WORKSPACE ACTIONS
-              </Typography>
-              <Grid container spacing={2}>
-                <Grid item xs={12} sm={6}>
-                  <Button
-                    fullWidth
-                    variant={!remnant.is_scrap ? "contained" : "outlined"}
-                    color="primary"
-                    startIcon={<PlayIcon />}
-                    onClick={handleOpenModal}
-                    disabled={remnant.status !== 'Available' && remnant.status !== 'Partially Used'}
-                    sx={{
-                      py: 1.5,
-                      borderRadius: '8px',
-                      textTransform: 'none',
-                      fontWeight: 800,
-                      bgcolor: !remnant.is_scrap ? '#0d9488' : 'transparent',
-                      color: !remnant.is_scrap ? '#ffffff' : '#0d9488',
-                      borderColor: '#0d9488',
-                      '&:hover': {
-                        bgcolor: !remnant.is_scrap ? '#0b7a70' : 'rgba(13, 148, 136, 0.08)',
-                        borderColor: '#0d9488'
-                      }
-                    }}
-                  >
-                    Use Remnant (Standard)
-                  </Button>
-                </Grid>
-                <Grid item xs={12} sm={6}>
-                  <Button
-                    fullWidth
-                    variant={remnant.is_scrap ? "contained" : "outlined"}
-                    color="warning"
-                    startIcon={<PlayIcon />}
-                    onClick={handleOpenModal}
-                    disabled={remnant.status !== 'Available' && remnant.status !== 'Partially Used'}
-                    sx={{
-                      py: 1.5,
-                      borderRadius: '8px',
-                      textTransform: 'none',
-                      fontWeight: 800,
-                      bgcolor: remnant.is_scrap ? '#e0af68' : 'transparent',
-                      color: remnant.is_scrap ? '#1a1b26' : '#e0af68',
-                      borderColor: '#e0af68',
-                      '&:hover': {
-                        bgcolor: remnant.is_scrap ? '#cf9e57' : 'rgba(224, 175, 104, 0.08)',
-                        borderColor: '#e0af68'
-                      }
-                    }}
-                  >
-                    Use Scrap (Irregular)
-                  </Button>
-                </Grid>
-              </Grid>
-              <Typography variant="caption" sx={{ display: 'block', color: '#565f89', mt: 2, textAlign: 'center', fontStyle: 'italic' }}>
-                {remnant.status !== 'Available' && remnant.status !== 'Partially Used' 
-                  ? "This remnant has already been consumed or reserved." 
-                  : remnant.is_scrap 
-                    ? "Warning: This is irregular scrap. Verify nesting path clearance in the workspace." 
-                    : "Ready: This standard offcut can be selected as the stock boundary directly."
-                }
-              </Typography>
-            </Box>
-          </Paper>
-        </Grid>
+                  {(activeView === 'leftover' || activeView === 'partition') && (
+                    <Box sx={{ py: 1.5, px: 2, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: '8px', border: '1px dashed rgba(255,255,255,0.08)', textAlign: 'center' }}>
+                      <Typography variant="body2" sx={{ color: '#a9b1d6', fontWeight: 600 }}>
+                        Manufacturing Reference (View Only)
+                      </Typography>
+                      <Typography variant="caption" sx={{ color: '#565f89', display: 'block', mt: 0.5 }}>
+                        Nesting cycles must start from either the Usable Rectangle or Scrap views.
+                      </Typography>
+                    </Box>
+                  )}
 
-        {/* Specs Metadata */}
-        <Grid item xs={12} md={5}>
-          <Paper 
-            sx={{ 
-              p: 3, 
-              bgcolor: '#0f1319', 
-              border: '1px solid rgba(255, 255, 255, 0.06)', 
-              borderRadius: '16px',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 2.5
-            }}
-          >
-            <Typography variant="subtitle1" sx={{ color: '#ffffff', fontWeight: 700 }}>
-              ASSET METADATA & SPECS
-            </Typography>
+                  {activeView === 'rectangular' && (
+                    <Box>
+                      {rectRemnant ? (
+                        <>
+                          <Button
+                            fullWidth
+                            variant="contained"
+                            color="primary"
+                            startIcon={<PlayIcon />}
+                            onClick={() => handleOpenModal(rectRemnant.id)}
+                            disabled={rectRemnant.status !== 'Available' && rectRemnant.status !== 'Partially Used'}
+                            sx={{
+                              py: 1.5,
+                              borderRadius: '8px',
+                              textTransform: 'none',
+                              fontWeight: 800,
+                              bgcolor: '#0d9488',
+                              color: '#ffffff',
+                              '&:hover': { bgcolor: '#0b7a70' }
+                            }}
+                          >
+                            Use This Remnant
+                          </Button>
+                          <Typography variant="caption" sx={{ display: 'block', color: '#565f89', mt: 2, textAlign: 'center', fontStyle: 'italic' }}>
+                            {rectRemnant.status !== 'Available' && rectRemnant.status !== 'Partially Used' 
+                              ? "This rectangular remnant has already been consumed or reserved." 
+                              : "Ready: This standard offcut can be selected as the stock boundary directly."
+                            }
+                          </Typography>
+                        </>
+                      ) : (
+                        <Typography variant="body2" sx={{ color: '#f7768e', textAlign: 'center' }}>
+                          No rectangular remnant is available for this material partition.
+                        </Typography>
+                      )}
+                    </Box>
+                  )}
 
-            <Stack spacing={2} divider={<Divider sx={{ borderColor: 'rgba(255, 255, 255, 0.04)' }} />}>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Typography variant="body2" sx={{ color: '#565f89', fontWeight: 600 }}>Material Master</Typography>
-                <Chip 
-                  label={remnant.material_type} 
-                  sx={{ bgcolor: 'rgba(13, 148, 136, 0.1)', color: '#0d9488', borderColor: 'rgba(13, 148, 136, 0.2)', borderWidth: 1, borderStyle: 'solid', fontWeight: 700 }}
-                />
-              </Box>
-
-              <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: '#a9b1d6' }}>
-                  <DimensionsIcon sx={{ fontSize: '18px', color: '#0d9488' }} />
-                  <Typography variant="body2" sx={{ fontWeight: 600 }}>Dimensions</Typography>
+                  {activeView === 'scrap' && (
+                    <Box>
+                      {activeScrap ? (
+                        <>
+                          {scrapRemnants.length > 1 && (
+                            <FormControl size="small" fullWidth sx={{ mb: 2 }}>
+                              <InputLabel id="scrap-piece-select-label" sx={{ color: '#a9b1d6' }}>Select Scrap Piece to Reuse</InputLabel>
+                              <Select
+                                labelId="scrap-piece-select-label"
+                                value={selectedScrapId}
+                                onChange={(e) => setSelectedScrapId(e.target.value)}
+                                label="Select Scrap Piece to Reuse"
+                                sx={{
+                                  color: '#ffffff',
+                                  '.MuiOutlinedInput-notchedOutline': { borderColor: 'rgba(255,255,255,0.1)' }
+                                }}
+                              >
+                                {scrapRemnants.map((piece, idx) => (
+                                  <MenuItem key={piece.id} value={piece.id}>
+                                    {`Scrap Piece ${idx + 1} (SP-${String(piece.id).padStart(4, '0')}) - ${formatArea(piece.remaining_area)}`}
+                                  </MenuItem>
+                                ))}
+                              </Select>
+                            </FormControl>
+                          )}
+                          
+                          <Button
+                            fullWidth
+                            variant="contained"
+                            color="warning"
+                            startIcon={<PlayIcon />}
+                            onClick={() => handleOpenModal(activeScrap.id)}
+                            disabled={activeScrap.status !== 'Available' && activeScrap.status !== 'Partially Used'}
+                            sx={{
+                              py: 1.5,
+                              borderRadius: '8px',
+                              textTransform: 'none',
+                              fontWeight: 800,
+                              bgcolor: '#e0af68',
+                              color: '#1a1b26',
+                              '&:hover': { bgcolor: '#cf9e57' }
+                            }}
+                          >
+                            Use This Scrap
+                          </Button>
+                          <Typography variant="caption" sx={{ display: 'block', color: '#565f89', mt: 2, textAlign: 'center', fontStyle: 'italic' }}>
+                            {activeScrap.status !== 'Available' && activeScrap.status !== 'Partially Used' 
+                              ? "This irregular scrap piece has already been consumed or reserved." 
+                              : "Warning: This is irregular scrap. Verify nesting path clearance in the workspace." 
+                            }
+                          </Typography>
+                        </>
+                      ) : (
+                        <Typography variant="body2" sx={{ color: '#f7768e', textAlign: 'center' }}>
+                          No scrap pieces are available for this material partition.
+                        </Typography>
+                      )}
+                    </Box>
+                  )}
                 </Box>
-                <Typography variant="body2" sx={{ fontWeight: 800 }}>
-                  {remnant.remaining_width} x {remnant.remaining_height} mm
+              </Paper>
+            </Grid>
+
+            {/* Dynamic Specs Metadata Card */}
+            <Grid item xs={12} md={5}>
+              <Paper 
+                sx={{ 
+                  p: 3, 
+                  bgcolor: '#0f1319', 
+                  border: '1px solid rgba(255, 255, 255, 0.06)', 
+                  borderRadius: '16px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 2.5
+                }}
+              >
+                <Typography variant="subtitle1" sx={{ color: '#ffffff', fontWeight: 700 }}>
+                  {metadataTitle}
                 </Typography>
-              </Box>
 
-              <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: '#a9b1d6' }}>
-                  <AreaIcon sx={{ fontSize: '18px', color: '#0d9488' }} />
-                  <Typography variant="body2" sx={{ fontWeight: 600 }}>Remaining Area</Typography>
-                </Box>
-                <Typography variant="body2" sx={{ fontWeight: 800 }}>
-                  {formatArea(remnant.remaining_area)}
-                </Typography>
-              </Box>
+                {metadataDetails.sourceType !== 'None Available' ? (
+                  <Stack spacing={2} divider={<Divider sx={{ borderColor: 'rgba(255, 255, 255, 0.04)' }} />}>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Typography variant="body2" sx={{ color: '#565f89', fontWeight: 600 }}>Material Master</Typography>
+                      <Chip 
+                        label={metadataDetails.material} 
+                        sx={{ bgcolor: 'rgba(13, 148, 136, 0.1)', color: '#0d9488', borderColor: 'rgba(13, 148, 136, 0.2)', borderWidth: 1, borderStyle: 'solid', fontWeight: 700 }}
+                      />
+                    </Box>
 
-              <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: '#a9b1d6' }}>
-                  <DimensionsIcon sx={{ fontSize: '18px', color: '#0d9488' }} />
-                  <Typography variant="body2" sx={{ fontWeight: 600 }}>Thickness</Typography>
-                </Box>
-                <Typography variant="body2" sx={{ fontWeight: 800 }}>
-                  {remnant.material_thickness} mm
-                </Typography>
-              </Box>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Typography variant="body2" sx={{ color: '#565f89', fontWeight: 600 }}>Asset Source</Typography>
+                      <Chip 
+                        label={metadataDetails.idLabel} 
+                        size="small"
+                        sx={{ bgcolor: 'rgba(255,255,255,0.03)', color: '#a9b1d6', border: '1px solid rgba(255,255,255,0.08)', fontWeight: 700 }}
+                      />
+                    </Box>
 
-              <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: '#a9b1d6' }}>
-                  <MoneyIcon sx={{ fontSize: '18px', color: '#10b981' }} />
-                  <Typography variant="body2" sx={{ fontWeight: 600 }}>Recovery Value</Typography>
-                </Box>
-                <Typography variant="body2" sx={{ fontWeight: 800, color: '#10b981' }}>
-                  {formatCurrency(remnant.estimated_value)}
-                </Typography>
-              </Box>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: '#a9b1d6' }}>
+                        <DimensionsIcon sx={{ fontSize: '18px', color: '#0d9488' }} />
+                        <Typography variant="body2" sx={{ fontWeight: 600 }}>Dimensions</Typography>
+                      </Box>
+                      <Typography variant="body2" sx={{ fontWeight: 800 }}>
+                        {metadataDetails.dimensions}
+                      </Typography>
+                    </Box>
 
-              <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: '#a9b1d6' }}>
-                  <DateIcon sx={{ fontSize: '18px', color: '#0d9488' }} />
-                  <Typography variant="body2" sx={{ fontWeight: 600 }}>Created At</Typography>
-                </Box>
-                <Typography variant="body2" sx={{ fontWeight: 600, color: '#565f89' }}>
-                  {new Date(remnant.created_at).toLocaleDateString(undefined, {
-                    year: 'numeric',
-                    month: 'long',
-                    day: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit'
-                  })}
-                </Typography>
-              </Box>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: '#a9b1d6' }}>
+                        <AreaIcon sx={{ fontSize: '18px', color: '#0d9488' }} />
+                        <Typography variant="body2" sx={{ fontWeight: 600 }}>Remaining Area</Typography>
+                      </Box>
+                      <Typography variant="body2" sx={{ fontWeight: 800 }}>
+                        {formatArea(metadataDetails.area)}
+                      </Typography>
+                    </Box>
 
-              <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: '#a9b1d6' }}>
-                  <OpenIcon sx={{ fontSize: '18px', color: '#06b6d4' }} />
-                  <Typography variant="body2" sx={{ fontWeight: 600 }}>Origin Project</Typography>
-                </Box>
-                <Link to={`/projects/${remnant.project_id}`} style={{ textDecoration: 'none', color: '#06b6d4', fontWeight: 700 }}>
-                  {remnant.project_name || `Project #${remnant.project_id}`}
-                </Link>
-              </Box>
-            </Stack>
-          </Paper>
-        </Grid>
-      </Grid>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: '#a9b1d6' }}>
+                        <DimensionsIcon sx={{ fontSize: '18px', color: '#0d9488' }} />
+                        <Typography variant="body2" sx={{ fontWeight: 600 }}>Thickness</Typography>
+                      </Box>
+                      <Typography variant="body2" sx={{ fontWeight: 800 }}>
+                        {metadataDetails.thickness} mm
+                      </Typography>
+                    </Box>
+
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: '#a9b1d6' }}>
+                        <MoneyIcon sx={{ fontSize: '18px', color: '#10b981' }} />
+                        <Typography variant="body2" sx={{ fontWeight: 600 }}>Recovery Value</Typography>
+                      </Box>
+                      <Typography variant="body2" sx={{ fontWeight: 800, color: '#10b981' }}>
+                        {formatCurrency(metadataDetails.value)}
+                      </Typography>
+                    </Box>
+
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Typography variant="body2" sx={{ color: '#565f89', fontWeight: 600 }}>Lifecycle Status</Typography>
+                      <Chip 
+                        label={metadataDetails.status} 
+                        size="small"
+                        color={metadataDetails.status === 'Available' ? 'success' : metadataDetails.status === 'Consumed' ? 'default' : 'warning'}
+                        sx={{ fontWeight: 800, textTransform: 'uppercase', fontSize: '0.65rem' }}
+                      />
+                    </Box>
+
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: '#a9b1d6' }}>
+                        <DateIcon sx={{ fontSize: '18px', color: '#0d9488' }} />
+                        <Typography variant="body2" sx={{ fontWeight: 600 }}>Created At</Typography>
+                      </Box>
+                      <Typography variant="body2" sx={{ fontWeight: 600, color: '#565f89' }}>
+                        {new Date(remnant.created_at).toLocaleDateString(undefined, {
+                          year: 'numeric',
+                          month: 'long',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })}
+                      </Typography>
+                    </Box>
+
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: '#a9b1d6' }}>
+                        <OpenIcon sx={{ fontSize: '18px', color: '#06b6d4' }} />
+                        <Typography variant="body2" sx={{ fontWeight: 600 }}>Origin Project</Typography>
+                      </Box>
+                      <Link to={`/projects/${remnant.project_id}`} style={{ textDecoration: 'none', color: '#06b6d4', fontWeight: 700 }}>
+                        {remnant.project_name || `Project #${remnant.project_id}`}
+                      </Link>
+                    </Box>
+                  </Stack>
+                ) : (
+                  <Box sx={{ py: 3, textAlign: 'center', color: '#565f89' }}>
+                    <Typography variant="body2">No asset metadata available for this view mode.</Typography>
+                  </Box>
+                )}
+              </Paper>
+            </Grid>
+          </Grid>
+        );
+      })()}
 
       {/* Genealogy Lineage (Secondary Reference) */}
       <Paper 

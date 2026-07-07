@@ -5,7 +5,8 @@ const {
   uploadDxfFile,
   getFilesByProject,
   deleteFile,
-  updateFileQuantity
+  updateFileQuantity,
+  getFileGeometry
 } = require('../controllers/fileController');
 
 // Route for uploading a DXF file (intercepts multer errors first)
@@ -29,5 +30,8 @@ router.delete('/:id', deleteFile);
 
 // Route for updating file quantity
 router.put('/:id/quantity', updateFileQuantity);
+
+// Route for retrieving parsed geometry of a file
+router.get('/geometry/:id', getFileGeometry);
 
 module.exports = router;

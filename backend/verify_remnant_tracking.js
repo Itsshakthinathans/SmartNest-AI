@@ -265,6 +265,74 @@ EOF`;
     }
     
     console.log('✔ Recommendation successfully matched remnant RM-' + String(remnant.id).padStart(4, '0') + '!');
+
+    // 8.5. Test manual fill/adjustment (Draft state)
+    console.log('\n[API Test] PUT /api/nesting/layout/' + testJobId);
+    
+    // Get current placements
+    const resultsDir = path.join(__dirname, 'src/uploads/projects', String(testProjectId1), 'results');
+    const activeJson = path.join(resultsDir, 'nested_output.json');
+    const layoutData = JSON.parse(fs.readFileSync(activeJson, 'utf8'));
+    const currentPlacements = layoutData.placements[0].sheetplacements;
+    
+    // Perform manual layout update
+    const updateRes = await request('PUT', `/api/nesting/layout/${testJobId}`, {
+      parts: currentPlacements,
+      strategy: ''
+    });
+    
+    if (updateRes.statusCode !== 200) {
+      throw new Error(`PUT /api/nesting/layout failed with status: ${updateRes.statusCode}`);
+    }
+    console.log('✔ Layout update saved successfully.');
+    
+    // Verify remnant status is updated to 'Draft'
+    const draftRemnantsResult = await pool.query('SELECT status FROM remnants WHERE project_id = $1 AND id = $2', [testProjectId1, remnant.id]);
+    if (draftRemnantsResult.rows.length === 0 || draftRemnantsResult.rows[0].status !== 'Draft') {
+      throw new Error(`Verification Failed: Remnant was not updated to 'Draft' status (current status: ${draftRemnantsResult.rows[0]?.status})`);
+    }
+    console.log('✔ Remnant successfully transitioned to Draft status in database.');
+    
+    // Verify Draft remnant is NOT returned in recommended remnants list
+    const recommendRes2 = await request('GET', `/api/remnants/recommend/${testProjectId2}`);
+    const recItem2 = recommendRes2.body.recommendations.find(r => r.id === remnant.id);
+    if (recItem2) {
+      throw new Error('Verification Failed: Stale Draft remnant is still recommended for Project 2!');
+    }
+    console.log('✔ Draft remnant successfully excluded from recommendations.');
+
+    // Verify Draft remnant is NOT returned in inventory list
+    const remnantsApiRes2 = await request('GET', '/api/remnants');
+    const remnantInList2 = remnantsApiRes2.body.find(r => r.id === remnant.id);
+    if (remnantInList2) {
+      throw new Error('Verification Failed: Draft remnant is still listed in available remnants inventory!');
+    }
+    console.log('✔ Draft remnant successfully excluded from active inventory list.');
+
+    // 8.6. Test Finalize Layout endpoint
+    console.log('\n[API Test] POST /api/nesting/finalize/' + testJobId);
+    const finalizeRes = await request('POST', `/api/nesting/finalize/${testJobId}`);
+    if (finalizeRes.statusCode !== 200) {
+      throw new Error(`POST /api/nesting/finalize failed with status: ${finalizeRes.statusCode}`);
+    }
+    console.log('✔ Layout finalized successfully.');
+
+    // Verify remnants are generated and marked 'Available' again
+    const finalRemnantsResult = await pool.query('SELECT * FROM remnants WHERE project_id = $1 ORDER BY id ASC', [testProjectId1]);
+    const newChildRemnant = finalRemnantsResult.rows.find(r => r.status === 'Available' && !r.is_scrap);
+    if (!newChildRemnant) {
+      throw new Error('Verification Failed: Finalized usable rectangular remnant was not generated or marked Available!');
+    }
+    console.log('✔ Finalized remnant successfully generated and marked Available (ID: RM-' + String(newChildRemnant.id).padStart(4, '0') + ').');
+
+    // Verify recommended list contains the new remnant
+    const recommendRes3 = await request('GET', `/api/remnants/recommend/${testProjectId2}`);
+    const recItem3 = recommendRes3.body.recommendations.find(r => r.id === newChildRemnant.id);
+    if (!recItem3) {
+      throw new Error('Verification Failed: Finalized remnant is not recommended for Project 2!');
+    }
+    console.log('✔ Finalized remnant recommended successfully.');
+
     console.log('\n=== ALL REMNANT TRACKING E2E TESTS PASSED SUCCESSFULLY! ✅ ===');
 
   } catch (err) {

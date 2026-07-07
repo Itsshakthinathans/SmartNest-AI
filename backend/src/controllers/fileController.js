@@ -306,10 +306,157 @@ const updateFileQuantity = async (req, res) => {
   }
 };
 
+const getFileGeometry = async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const fileRes = await pool.query('SELECT * FROM uploaded_files WHERE id = $1', [id]);
+    if (fileRes.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: `File with ID ${id} not found`
+      });
+    }
+
+    const file = fileRes.rows[0];
+    const absolutePath = path.join(__dirname, '..', file.file_path);
+    const ext = path.extname(file.file_name).toLowerCase();
+    
+    let svgPath = absolutePath + '.svg';
+    if (ext === '.svg') {
+      svgPath = absolutePath;
+    }
+
+    const nestingService = require('../services/nestingService');
+
+    // If SVG doesn't exist, trigger area calculation (which also converts and caches the SVG)
+    if (!fs.existsSync(svgPath)) {
+      await nestingService.calculateFileArea(absolutePath, file.file_name);
+    }
+
+    if (!fs.existsSync(svgPath)) {
+      return res.status(400).json({
+        success: false,
+        message: `SVG preview not found or could not be generated for ${file.file_name}`
+      });
+    }
+
+    const svgString = fs.readFileSync(svgPath, 'utf8');
+
+    // Run identical preprocessor extraction
+    const preprocessor = require('E:/smartnest-ai/ai-service/deepnest-next/node_modules/@deepnest/svg-preprocessor');
+    const preprocRes = preprocessor.loadSvgString(svgString, 72);
+    if (!preprocRes.success) {
+      return res.status(400).json({
+        success: false,
+        message: `Preprocessor failed: ${preprocRes.result}`
+      });
+    }
+
+    const { DOMParser } = require('@xmldom/xmldom');
+    const doc = new DOMParser().parseFromString(preprocRes.result, 'image/svg+xml');
+    const paths = doc.getElementsByTagName('path');
+    const allSegments = [];
+
+    for (let i = 0; i < paths.length; i++) {
+      const pathEl = paths[i];
+      const d = pathEl.getAttribute('d');
+      if (!d) continue;
+
+      const subPolys = preprocessor.pointsOnSvgPath(d, 0.5);
+      subPolys.forEach((poly) => {
+        if (poly && poly.length >= 2) {
+          allSegments.push(poly);
+        }
+      });
+    }
+
+    const localPolygonArea = (polygon) => {
+      let area = 0;
+      for (let i = 0; i < polygon.length; i++) {
+        const j = (i + 1) % polygon.length;
+        area += polygon[i].x * polygon[j].y;
+        area -= polygon[j].x * polygon[i].y;
+      }
+      return area / 2;
+    };
+
+    const mergedPolys = nestingService.mergeSegments(allSegments, 1.0);
+    const rawPolys = [];
+    mergedPolys.forEach((poly) => {
+      if (poly.length > 2) {
+        const area = Math.abs(localPolygonArea(poly));
+        if (area > 1) { // ignore noise
+          rawPolys.push(poly);
+        }
+      }
+    });
+
+    const filePolys = nestingService.groupPolygonsByHierarchy(rawPolys);
+    if (filePolys.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No polygons could be extracted from this part.'
+      });
+    }
+
+    const origPoly = filePolys[0];
+    
+    // Map geometry and holes exactly matching nesting engine's internal authoritative geometry:
+    // geometry -> origPoly (unsimplified outer points array of {x, y, exact})
+    // holes -> origPoly.children (unsimplified holes arrays of {x, y, exact})
+    const geometryPoints = origPoly.map(pt => ({ x: pt.x, y: pt.y, exact: pt.exact }));
+    const holesPoints = (origPoly.children || []).map(child =>
+      child.map(pt => ({ x: pt.x, y: pt.y, exact: pt.exact }))
+    );
+
+    // Compute centroid and boundingBox
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    let sumX = 0, sumY = 0;
+    geometryPoints.forEach(pt => {
+      if (pt.x < minX) minX = pt.x;
+      if (pt.x > maxX) maxX = pt.x;
+      if (pt.y < minY) minY = pt.y;
+      if (pt.y > maxY) maxY = pt.y;
+      sumX += pt.x;
+      sumY += pt.y;
+    });
+
+    const centroid = {
+      x: sumX / (geometryPoints.length || 1),
+      y: sumY / (geometryPoints.length || 1)
+    };
+
+    const boundingBox = {
+      x: minX === Infinity ? 0 : minX,
+      y: minY === Infinity ? 0 : minY,
+      width: minX === Infinity ? 0 : (maxX - minX),
+      height: minY === Infinity ? 0 : (maxY - minY)
+    };
+
+    return res.status(200).json({
+      success: true,
+      geometry: geometryPoints,
+      holes: holesPoints,
+      centroid,
+      boundingBox
+    });
+
+  } catch (err) {
+    console.error('Error in getFileGeometry:', err.message);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal Server Error',
+      error: err.message
+    });
+  }
+};
+
 module.exports = {
   upload,
   uploadDxfFile,
   getFilesByProject,
   deleteFile,
-  updateFileQuantity
+  updateFileQuantity,
+  getFileGeometry
 };

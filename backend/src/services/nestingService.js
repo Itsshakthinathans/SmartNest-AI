@@ -92,6 +92,10 @@ function pointInPolygon(point, polygon) {
 }
 
 function findLargestRectangleInLeftover(sheetWidth, sheetHeight, leftoverRegion, placedPartObstacles) {
+  if (!global.ClipperLib || !global.GeometryUtil) {
+    prepareEnvironment();
+  }
+
   const outerPolygon = leftoverRegion.outer || [];
   const holes = leftoverRegion.holes || [];
   
@@ -110,69 +114,134 @@ function findLargestRectangleInLeftover(sheetWidth, sheetHeight, leftoverRegion,
       obstacles.push({ minX: minHX, minY: minHY, maxX: maxHX, maxY: maxHY });
     }
   });
-  
-  // 2. Add complement of outer polygon as obstacles (using grid-based decomposition)
-  const gridSize = 25; // 25mm grid resolution
-  const cols = Math.ceil(sheetWidth / gridSize);
-  const rows = Math.ceil(sheetHeight / gridSize);
-  
-  for (let c = 0; c < cols; c++) {
-    const x1 = c * gridSize;
-    const x2 = Math.min(sheetWidth, (c + 1) * gridSize);
+
+  // 2. Gather all candidate X and Y coordinates
+  const xCoords = [0, sheetWidth];
+  const yCoords = [0, sheetHeight];
+
+  outerPolygon.forEach(pt => {
+    xCoords.push(pt.x);
+    yCoords.push(pt.y);
+  });
+
+  obstacles.forEach(o => {
+    xCoords.push(o.minX);
+    xCoords.push(o.maxX);
+    yCoords.push(o.minY);
+    yCoords.push(o.maxY);
+  });
+
+  // Normalization helper
+  const roundCoord = val => Math.round(val * 10000) / 10000;
+
+  const xs = Array.from(new Set(xCoords.map(x => Math.max(0, Math.min(sheetWidth, roundCoord(x)))))).sort((a, b) => a - b);
+  const ys = Array.from(new Set(yCoords.map(y => Math.max(0, Math.min(sheetHeight, roundCoord(y)))))).sort((a, b) => a - b);
+
+  // Helper function to check if a candidate rectangle is fully inside the outer polygon using Clipper Difference
+  const isRectInsidePolygon = (x1, y1, x2, y2, poly, scale = 10000000) => {
+    const clipper = new ClipperLib.Clipper();
     
-    for (let r = 0; r < rows; r++) {
-      const y1 = r * gridSize;
-      const y2 = Math.min(sheetHeight, (r + 1) * gridSize);
+    const rectPath = [
+      { X: Math.round(x1 * scale), Y: Math.round(y1 * scale) },
+      { X: Math.round(x2 * scale), Y: Math.round(y1 * scale) },
+      { X: Math.round(x2 * scale), Y: Math.round(y2 * scale) },
+      { X: Math.round(x1 * scale), Y: Math.round(y2 * scale) }
+    ];
+    
+    const polyPath = poly.map(pt => ({ X: Math.round(pt.x * scale), Y: Math.round(pt.y * scale) }));
+    
+    clipper.AddPath(rectPath, ClipperLib.PolyType.ptSubject, true);
+    clipper.AddPath(polyPath, ClipperLib.PolyType.ptClip, true);
+    
+    const solution = new ClipperLib.PolyTree();
+    clipper.Execute(
+      ClipperLib.ClipType.ctDifference,
+      solution,
+      ClipperLib.PolyFillType.pftEvenOdd,
+      ClipperLib.PolyFillType.pftEvenOdd
+    );
+    
+    return solution.ChildCount() === 0;
+  };
+
+  let maxArea = 0;
+  let bestRect = { x1: 0, y1: 0, x2: 0, y2: 0 };
+
+  // 3. Solve Maximum Empty Rectangle contained in the polygon
+  for (let i = 0; i < xs.length; i++) {
+    for (let j = i + 1; j < xs.length; j++) {
+      const x1 = xs[i];
+      const x2 = xs[j];
+      const width = x2 - x1;
+
+      // Prune if the maximum possible area with this width is less than or equal to maxArea
+      if (width * sheetHeight <= maxArea) continue;
+
+      const overlapping = obstacles.filter(o => o.minX < x2 && o.maxX > x1);
+
+      // Collect Y coordinates relevant to this vertical strip [x1, x2]
+      const stripYCoords = [0, sheetHeight];
       
-      const cx = (x1 + x2) / 2;
-      const cy = (y1 + y2) / 2;
-      
-      const corners = [
-        { x: x1, y: y1 },
-        { x: x2, y: y1 },
-        { x: x2, y: y2 },
-        { x: x1, y: y2 },
-        { x: cx, y: cy }
-      ];
-      
-      const isOutside = corners.some(pt => !pointInPolygon(pt, outerPolygon));
-      if (isOutside) {
-        obstacles.push({ minX: x1, minY: y1, maxX: x2, maxY: y2 });
+      overlapping.forEach(o => {
+        stripYCoords.push(o.minY);
+        stripYCoords.push(o.maxY);
+      });
+
+      // Add boundary segments intersecting the vertical strip
+      const polygons = [outerPolygon, ...holes];
+      polygons.forEach(poly => {
+        for (let idx = 0; idx < poly.length; idx++) {
+          const p1 = poly[idx];
+          const p2 = poly[(idx + 1) % poly.length];
+          const minX = Math.min(p1.x, p2.x);
+          const maxX = Math.max(p1.x, p2.x);
+          if (minX < x2 && maxX > x1) {
+            stripYCoords.push(p1.y);
+            stripYCoords.push(p2.y);
+            
+            const dx = p2.x - p1.x;
+            if (Math.abs(dx) > 1e-5) {
+              const dy = p2.y - p1.y;
+              if (x1 > minX && x1 < maxX) {
+                stripYCoords.push(p1.y + (dy / dx) * (x1 - p1.x));
+              }
+              if (x2 > minX && x2 < maxX) {
+                stripYCoords.push(p1.y + (dy / dx) * (x2 - p1.x));
+              }
+            }
+          }
+        }
+      });
+
+      const stripYs = Array.from(new Set(stripYCoords.map(y => Math.max(0, Math.min(sheetHeight, roundCoord(y)))))).sort((a, b) => a - b);
+
+      for (let a = 0; a < stripYs.length; a++) {
+        for (let b = a + 1; b < stripYs.length; b++) {
+          const y1 = stripYs[a];
+          const y2 = stripYs[b];
+          const height = y2 - y1;
+          const area = width * height;
+          if (area <= maxArea) continue;
+
+          // Check if it overlaps any obstacles in this strip
+          const overlaps = overlapping.some(o => o.minY < y2 && o.maxY > y1);
+          if (overlaps) continue;
+
+          // Check if inside the outer polygon
+          if (isRectInsidePolygon(x1, y1, x2, y2, outerPolygon)) {
+            maxArea = area;
+            bestRect = { x1, y1, x2, y2 };
+          }
+        }
       }
     }
   }
-  
-  // 3. Solve Maximum Empty Rectangle
-  const rect = findLargestEmptyRectangle(sheetWidth, sheetHeight, obstacles);
-  
-  // 4. Shrink/contract by 1mm iteratively if it overflows outer boundaries (safety containment check)
-  let bestX1 = rect.x1;
-  let bestY1 = rect.y1;
-  let bestX2 = rect.x2;
-  let bestY2 = rect.y2;
-  
-  const sampleCheck = () => {
-    const midX = (bestX1 + bestX2) / 2;
-    const midY = (bestY1 + bestY2) / 2;
-    const testPoints = [
-      { x: bestX1 + 0.1, y: bestY1 + 0.1 },
-      { x: bestX2 - 0.1, y: bestY1 + 0.1 },
-      { x: bestX2 - 0.1, y: bestY2 - 0.1 },
-      { x: bestX1 + 0.1, y: bestY2 - 0.1 },
-      { x: midX, y: midY }
-    ];
-    return testPoints.every(pt => pointInPolygon(pt, outerPolygon));
-  };
-  
-  let attempts = 0;
-  while (!sampleCheck() && attempts < 15) {
-    bestX1 += 1;
-    bestY1 += 1;
-    bestX2 -= 1;
-    bestY2 -= 1;
-    attempts++;
-  }
-  
+
+  const bestX1 = bestRect.x1;
+  const bestY1 = bestRect.y1;
+  const bestX2 = bestRect.x2;
+  const bestY2 = bestRect.y2;
+
   return {
     x1: bestX1,
     y1: bestY1,
@@ -810,6 +879,9 @@ function placeParts(sheets, parts, config, nestindex) {
     var placements = [];
     var sheet = sheets.shift();
     if (!sheet) {
+      if (config && config.remnantId) {
+        break;
+      }
       const template = originalSheets[0];
       if (!template) break;
       sheet = clonePolygonWithChildren(template);
@@ -1474,8 +1546,11 @@ const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', s
       const remnantRes = await pool.query('SELECT geometry FROM remnants WHERE id = $1', [remnantId]);
       if (remnantRes.rows.length > 0 && remnantRes.rows[0].geometry) {
         const geom = remnantRes.rows[0].geometry;
-        sheet = geom.outer.map(pt => ({ x: pt.x, y: pt.y }));
-        sheet.children = (geom.holes || []).map(hole => hole.map(pt => ({ x: pt.x, y: pt.y })));
+        let outer = geom.outer.map(pt => ({ x: pt.x, y: pt.y }));
+        let holes = (geom.holes || []).map(hole => hole.map(pt => ({ x: pt.x, y: pt.y })));
+        
+        sheet = outer;
+        sheet.children = holes;
         console.log(`[NestingService] Loaded custom remnant stock polygon with ${sheet.length} points and ${sheet.children.length} holes.`);
       }
     } catch (dbErr) {
@@ -1507,7 +1582,8 @@ const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', s
     mergeLines: false,
     timeRatio: 0.5,
     scale: 72,
-    strategy: strategy
+    strategy: strategy,
+    remnantId: remnantId
   };
 
   let generations = 0;
@@ -1606,7 +1682,17 @@ const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', s
     result.placements.forEach((sheetPlacement, sheetIdx) => {
       const yOffset = sheetIdx * (sheetHeight + sheetSpacing);
 
-      svgContent += `  <rect x="10" y="${yOffset + 10}" width="${sheetWidth}" height="${sheetHeight}" fill="none" stroke="#565f89" stroke-width="2" stroke-dasharray="5,5" />\n`;
+      if (remnantId && sheet && sheet.length > 0) {
+        let sheetPathD = `M ${sheet.map(pt => `${pt.x + 10} ${pt.y + yOffset + 10}`).join(' L ')} Z`;
+        if (sheet.children && sheet.children.length > 0) {
+          sheet.children.forEach(child => {
+            sheetPathD += ` M ${child.map(pt => `${pt.x + 10} ${pt.y + yOffset + 10}`).join(' L ')} Z`;
+          });
+        }
+        svgContent += `  <path id="sheet-boundary" d="${sheetPathD}" fill="none" stroke="#0d9488" stroke-width="2" fill-rule="evenodd" />\n`;
+      } else {
+        svgContent += `  <rect x="10" y="${yOffset + 10}" width="${sheetWidth}" height="${sheetHeight}" fill="none" stroke="#565f89" stroke-width="2" stroke-dasharray="5,5" />\n`;
+      }
 
       let sheetPlacedArea = 0;
       sheetPlacement.sheetplacements.forEach(p => {
@@ -2036,8 +2122,29 @@ const updateLayoutFiles = async (jobId, projectFiles, placements, strategy = nul
     });
   });
 
+  const polygonMaterialArea = (poly) => {
+    let area = Math.abs(GeometryUtil.polygonArea(poly.originalPoints || poly));
+    if (poly.originalChildren || poly.children) {
+      const children = poly.originalChildren || poly.children;
+      children.forEach(child => {
+        area -= Math.abs(GeometryUtil.polygonArea(child));
+      });
+    }
+    return area;
+  };
+
+  const sheetArea = job.remnant_id ? (sheet.area || sheetWidth * sheetHeight) : (sheetWidth * sheetHeight);
+  let placedArea = 0;
+  sheetplacements.forEach(p => {
+    const origPart = partsToNest.find(part => part.partId === p.partId) || partsToNest.find(part => part.id === p.id) || partsToNest.find(part => part.filename === p.filename);
+    if (origPart) {
+      placedArea += polygonMaterialArea(origPart);
+    }
+  });
+  const newUtilization = sheetArea > 0 ? (placedArea / sheetArea) * 100 : 0;
+
   const result = {
-    utilisation: job.utilization ? parseFloat(job.utilization) : 0,
+    utilisation: newUtilization,
     placements: [
       {
         sheetplacements
@@ -2047,7 +2154,17 @@ const updateLayoutFiles = async (jobId, projectFiles, placements, strategy = nul
 
   // 4. Render new SVG content
   let svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="${sheetWidth + 100}" height="${sheetHeight + 100}" style="background:#1e1e24; padding:20px; border-radius:10px;">\n`;
-  svgContent += `  <rect x="10" y="10" width="${sheetWidth}" height="${sheetHeight}" fill="none" stroke="#565f89" stroke-width="2" stroke-dasharray="5,5" />\n`;
+  if (job.remnant_id && sheet && sheet.length > 0) {
+    let sheetPathD = `M ${sheet.map(pt => `${pt.x + 10} ${pt.y + 10}`).join(' L ')} Z`;
+    if (sheet.children && sheet.children.length > 0) {
+      sheet.children.forEach(child => {
+        sheetPathD += ` M ${child.map(pt => `${pt.x + 10} ${pt.y + 10}`).join(' L ')} Z`;
+      });
+    }
+    svgContent += `  <path id="sheet-boundary" d="${sheetPathD}" fill="none" stroke="#0d9488" stroke-width="2" fill-rule="evenodd" />\n`;
+  } else {
+    svgContent += `  <rect x="10" y="10" width="${sheetWidth}" height="${sheetHeight}" fill="none" stroke="#565f89" stroke-width="2" stroke-dasharray="5,5" />\n`;
+  }
   svgContent += `  <text x="20" y="30" fill="#a9b1d6" font-family="sans-serif" font-size="14">Sheet: ${sheetWidth} x ${sheetHeight} - Placed Parts: ${sheetplacements.length}/${partsToNest.length} - Utilization: ${result.utilisation.toFixed(2)}%</text>\n`;
 
   const colors = [
@@ -2119,7 +2236,8 @@ const updateLayoutFiles = async (jobId, projectFiles, placements, strategy = nul
     largestRemnantWidth: remnant.width,
     largestRemnantHeight: remnant.height,
     largestRemnantArea: remnant.area,
-    leftoverRegions
+    leftoverRegions,
+    newUtilization
   };
 };
 
@@ -2132,13 +2250,27 @@ const validatePlacement = async (jobId, projectFiles, placements, candidate) => 
   const sheetWidth = job.sheet_width;
   const sheetHeight = job.sheet_height;
 
-  // Create sheet boundaries polygon
-  const sheetPoly = [
-    { x: 0, y: 0 },
-    { x: sheetWidth, y: 0 },
-    { x: sheetWidth, y: sheetHeight },
-    { x: 0, y: sheetHeight }
-  ];
+  // Create sheet boundaries polygon or load custom remnant geometry
+  let sheetPoly = null;
+  if (job.remnant_id) {
+    const remnantRes = await pool.query('SELECT geometry FROM remnants WHERE id = $1', [job.remnant_id]);
+    if (remnantRes.rows.length > 0 && remnantRes.rows[0].geometry) {
+      const geom = remnantRes.rows[0].geometry;
+      sheetPoly = geom.outer.map(pt => ({ x: pt.x, y: pt.y }));
+      sheetPoly.children = (geom.holes || []).map(hole => hole.map(pt => ({ x: pt.x, y: pt.y })));
+    }
+  }
+
+  if (!sheetPoly) {
+    sheetPoly = [
+      { x: 0, y: 0 },
+      { x: sheetWidth, y: 0 },
+      { x: sheetWidth, y: sheetHeight },
+      { x: 0, y: sheetHeight }
+    ];
+    sheetPoly.children = [];
+  }
+
 
   const partsToNest = [];
   prepareEnvironment();
@@ -2613,14 +2745,14 @@ function extractLeftoverGeometry(sheet, placements, partsToNest, scale = 1000000
           const childNodes = node.Childs();
           for (let i = 0; i < childNodes.length; i++) {
             const childNode = childNodes[i];
-            const isOpen = childNode.IsOpen;
+            const isOpen = typeof childNode.IsOpen === 'function' ? childNode.IsOpen() : childNode.IsOpen;
             if (isOpen) continue;
             
-            const path = childNode.m_polygon || childNode.Polygon;
+            const path = typeof childNode.Polygon === 'function' ? childNode.Polygon() : (childNode.m_polygon || childNode.Polygon);
             if (!path || path.length < 3) continue;
             
             const poly = path.map(pt => ({ x: pt.X / scale, y: pt.Y / scale }));
-            const isHole = childNode.IsHole;
+            const isHole = typeof childNode.IsHole === 'function' ? childNode.IsHole() : childNode.IsHole;
             
             if (isHole) {
               if (parentPiece) {
@@ -2669,5 +2801,7 @@ module.exports = {
   validatePlacement,
   findLargestRectangleInLeftover,
   rotatePolygon,
-  shiftPolygon
+  shiftPolygon,
+  groupPolygonsByHierarchy,
+  mergeSegments
 };

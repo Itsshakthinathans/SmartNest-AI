@@ -7,10 +7,11 @@ const getAllRemnants = async (req, res) => {
       SELECT r.*, p.project_name
       FROM remnants r
       LEFT JOIN projects p ON r.project_id = p.id
+      WHERE r.status = 'Available'
     `;
     const params = [];
     if (req.query.isScrap !== undefined) {
-      query += ` WHERE r.is_scrap = $1`;
+      query += ` AND r.is_scrap = $1`;
       params.push(req.query.isScrap === 'true');
     }
     query += ` ORDER BY r.created_at DESC`;
@@ -63,6 +64,7 @@ const recommendRemnantsForProject = async (req, res) => {
         AND r.remaining_area >= $3
         AND r.project_id != $4
         AND r.used = false
+        AND r.status = 'Available'
       ORDER BY r.remaining_area ASC
     `;
     
@@ -114,16 +116,22 @@ const getRemnantById = async (req, res) => {
     const remnant = result.rows[0];
 
     // Fetch child remnants
-    const childrenQuery = 'SELECT id, status, remaining_width, remaining_height, remaining_area, created_at FROM remnants WHERE parent_remnant_id = $1 ORDER BY created_at DESC';
+    const childrenQuery = 'SELECT * FROM remnants WHERE parent_remnant_id = $1 ORDER BY created_at DESC';
     const childrenRes = await pool.query(childrenQuery, [id]);
     remnant.children = childrenRes.rows;
 
     // Fetch parent remnant
     let parent = null;
     if (remnant.parent_remnant_id) {
-      const parentQuery = 'SELECT id, status, remaining_width, remaining_height, remaining_area, created_at FROM remnants WHERE id = $1';
+      const parentQuery = 'SELECT * FROM remnants WHERE id = $1';
       const parentRes = await pool.query(parentQuery, [remnant.parent_remnant_id]);
       parent = parentRes.rows[0] || null;
+      if (parent) {
+        // Fetch sibling child remnants of this parent
+        const siblingsQuery = 'SELECT * FROM remnants WHERE parent_remnant_id = $1 ORDER BY created_at DESC';
+        const siblingsRes = await pool.query(siblingsQuery, [remnant.parent_remnant_id]);
+        parent.children = siblingsRes.rows;
+      }
     }
     remnant.parent = parent;
 

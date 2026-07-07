@@ -138,8 +138,16 @@ export const api = {
     const response = await apiClient.put(`/nesting/layout/${jobId}`, { parts, strategy });
     return response.data;
   },
+  getFileGeometry: async (id) => {
+    const response = await apiClient.get(`/files/geometry/${id}`);
+    return response.data;
+  },
   resetLayout: async (jobId) => {
     const response = await apiClient.post(`/nesting/reset/${jobId}`);
+    return response.data;
+  },
+  finalizeLayout: async (jobId) => {
+    const response = await apiClient.post(`/nesting/finalize/${jobId}`);
     return response.data;
   },
   regenerateLayout: async (jobId) => {

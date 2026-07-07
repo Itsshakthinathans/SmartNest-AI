@@ -466,7 +466,7 @@ export default function ReviewNestJob() {
   const totalRequestedParts = files.reduce((sum, f) => sum + (f.quantity || 1), 0);
   const totalPartArea = files.reduce((sum, f) => sum + (parseFloat(f.area || 0) * (f.quantity || 1)), 0);
   const sheetArea = sheetWidth * sheetHeight;
-  const estimatedSheets = sheetArea > 0 ? Math.ceil(totalPartArea / (sheetArea * EXPECTED_UTILIZATION)) : 0;
+  const estimatedSheets = config.selectedRemnant ? 1 : (sheetArea > 0 ? Math.ceil(totalPartArea / (sheetArea * EXPECTED_UTILIZATION)) : 0);
 
   const formatArea = (areaSqMm) => {
     const area = parseFloat(areaSqMm);
@@ -697,46 +697,98 @@ export default function ReviewNestJob() {
           </Paper>
         </Grid>
 
-        {/* Right Side: Setup Information, Empty Sheet Preview & Stats */}
         <Grid item xs={12} md={5}>
           <Stack spacing={3}>
             {/* 1. Sheet Setup and Layout Strategy */}
             <Paper sx={{ p: 3, bgcolor: '#0f1319', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '12px' }}>
-              <Typography variant="h6" sx={{ color: '#ffffff', fontWeight: 700, mb: 2 }}>
+               <Typography variant="h6" sx={{ color: '#ffffff', fontWeight: 700, mb: 2 }}>
                 Sheet Stock & Strategy
               </Typography>
               <Divider sx={{ borderColor: 'rgba(255,255,255,0.06)', mb: 2 }} />
 
-              <Stack spacing={1.5}>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Material:</Typography>
-                  <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                    {project?.material_type || 'Mild Steel'}
-                  </Typography>
-                </Box>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Thickness:</Typography>
-                  <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                    {project?.material_thickness || '1.0'} mm
-                  </Typography>
-                </Box>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Layout Strategy:</Typography>
-                  <Chip
-                    size="small"
-                    label={selectedStrategyLabel}
-                    sx={{ bgcolor: 'rgba(6, 182, 212, 0.1)', color: '#06b6d4', fontWeight: 700, fontSize: '0.75rem' }}
-                  />
-                </Box>
-                {config.selectedRemnant && (
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 1, p: 1, bgcolor: 'rgba(6, 182, 212, 0.05)', border: '1px solid rgba(6, 182, 212, 0.15)', borderRadius: '6px' }}>
-                    <Typography variant="caption" sx={{ color: '#06b6d4', fontWeight: 700 }}>Using Remnant Stock:</Typography>
-                    <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 800 }}>
-                      RM-{String(config.selectedRemnant.id).padStart(4, '0')}
+              {config.selectedRemnant ? (
+                <Stack spacing={1.5} sx={{ mb: 2 }}>
+                  <Box sx={{ py: 1, px: 1.5, bgcolor: 'rgba(13, 148, 136, 0.04)', border: '1px solid rgba(13, 148, 136, 0.2)', borderRadius: '8px' }}>
+                    <Typography variant="caption" sx={{ color: '#0d9488', fontWeight: 800, textTransform: 'uppercase', display: 'block', mb: 1 }}>
+                      ✓ Stock Source
+                    </Typography>
+                    <Stack spacing={1}>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 700 }}>Source Asset:</Typography>
+                        <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 800 }}>
+                          {config.selectedRemnant.is_scrap 
+                            ? `Scrap SP-${String(config.selectedRemnant.id).padStart(4, '0')}` 
+                            : `Remnant RM-${String(config.selectedRemnant.id).padStart(4, '0')}`
+                          }
+                        </Typography>
+                      </Box>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 700 }}>Geometry:</Typography>
+                        <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 800 }}>
+                          {config.selectedRemnant.is_scrap ? 'Irregular Scrap' : 'Rectangular Remnant'}
+                        </Typography>
+                      </Box>
+                      {!config.selectedRemnant.is_scrap && (
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 700 }}>Width × Height:</Typography>
+                          <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 800 }}>
+                            {config.selectedRemnant.remaining_width} × {config.selectedRemnant.remaining_height} mm
+                          </Typography>
+                        </Box>
+                      )}
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 700 }}>Stock Area:</Typography>
+                        <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 800 }}>
+                          {formatArea(config.selectedRemnant.remaining_area)}
+                        </Typography>
+                      </Box>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 700 }}>Material:</Typography>
+                        <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 800 }}>
+                          {config.selectedRemnant.material_type}
+                        </Typography>
+                      </Box>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 700 }}>Thickness:</Typography>
+                        <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 800 }}>
+                          {config.selectedRemnant.material_thickness} mm
+                        </Typography>
+                      </Box>
+                    </Stack>
+                  </Box>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Layout Strategy:</Typography>
+                    <Chip
+                      size="small"
+                      label={selectedStrategyLabel}
+                      sx={{ bgcolor: 'rgba(6, 182, 212, 0.1)', color: '#06b6d4', fontWeight: 700, fontSize: '0.75rem' }}
+                    />
+                  </Box>
+                </Stack>
+              ) : (
+                <Stack spacing={1.5}>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Material:</Typography>
+                    <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
+                      {project?.material_type || 'Mild Steel'}
                     </Typography>
                   </Box>
-                )}
-              </Stack>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Thickness:</Typography>
+                    <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
+                      {project?.material_thickness || '1.0'} mm
+                    </Typography>
+                  </Box>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Layout Strategy:</Typography>
+                    <Chip
+                      size="small"
+                      label={selectedStrategyLabel}
+                      sx={{ bgcolor: 'rgba(6, 182, 212, 0.1)', color: '#06b6d4', fontWeight: 700, fontSize: '0.75rem' }}
+                    />
+                  </Box>
+                </Stack>
+              )}
 
               {/* Strategy detailed description */}
               {renderStrategyDescription()}
@@ -916,7 +968,7 @@ export default function ReviewNestJob() {
                     {estimatedSheets}
                   </Typography>
                   <Typography variant="caption" sx={{ color: '#565f89', display: 'block' }}>
-                    Based on Expected Utilization ({EXPECTED_UTILIZATION * 100}%)
+                    {config.selectedRemnant ? 'Single-remnant placement' : `Based on Expected Utilization (${EXPECTED_UTILIZATION * 100}%)`}
                   </Typography>
                 </CardContent>
               </Card>

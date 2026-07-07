@@ -58,12 +58,12 @@ const getCentroid = (geometry) => {
   };
 };
 
-const getPathData = (geometry, holes = []) => {
+const getPathData = (geometry, holes = [], offsetX = 0, offsetY = 0) => {
   if (!geometry || geometry.length === 0) return '';
-  let d = `M ${geometry.map(pt => `${pt.x} ${pt.y}`).join(' L ')} Z`;
+  let d = `M ${geometry.map(pt => `${pt.x + offsetX} ${pt.y + offsetY}`).join(' L ')} Z`;
   if (holes && holes.length > 0) {
     holes.forEach(hole => {
-      d += ` M ${hole.map(pt => `${pt.x} ${pt.y}`).join(' L ')} Z`;
+      d += ` M ${hole.map(pt => `${pt.x + offsetX} ${pt.y + offsetY}`).join(' L ')} Z`;
     });
   }
   return d;
@@ -77,26 +77,33 @@ const parseSinglePartSvg = (svgText) => {
   let outerPoints = [];
   const holes = [];
   
-  paths.forEach((path, idx) => {
+  paths.forEach((path) => {
     const dStr = path.getAttribute('d') || '';
-    const coords = dStr.match(/[-+]?[0-9]*\.?[0-9]+/g);
-    const points = [];
-    if (coords) {
-      for (let i = 0; i < coords.length; i += 2) {
-        const x = parseFloat(coords[i]);
-        const y = parseFloat(coords[i+1]);
-        if (!isNaN(x) && !isNaN(y)) {
-          points.push({ x, y });
+    const subPathStrings = dStr.split(/[Mm]/);
+    
+    subPathStrings.forEach((subPathStr) => {
+      if (!subPathStr.trim()) return;
+      
+      const coords = subPathStr.match(/[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?/g);
+      const points = [];
+      if (coords) {
+        for (let i = 0; i < coords.length - 1; i += 2) {
+          const x = parseFloat(coords[i]);
+          const y = parseFloat(coords[i+1]);
+          if (!isNaN(x) && !isNaN(y)) {
+            points.push({ x, y });
+          }
         }
       }
-    }
-    if (points.length > 0) {
-      if (idx === 0) {
-        outerPoints = points;
-      } else {
-        holes.push(points);
+      
+      if (points.length > 2) {
+        if (outerPoints.length === 0) {
+          outerPoints = points;
+        } else {
+          holes.push(points);
+        }
       }
-    }
+    });
   });
   
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -192,6 +199,7 @@ export default function Result() {
   const [dragStartMouse, setDragStartMouse] = useState({ x: 0, y: 0 });
   const [dragStartPartPos, setDragStartPartPos] = useState({ x: 0, y: 0 });
   const [isDirty, setIsDirty] = useState(false);
+  const [finalizing, setFinalizing] = useState(false);
 
   // Library and History states
   const [projectFiles, setProjectFiles] = useState([]);
@@ -409,6 +417,35 @@ export default function Result() {
         setSheetY(parseFloat(rect.getAttribute('y')) || 10);
         setSheetWidth(parseFloat(rect.getAttribute('width')) || 1000);
         setSheetHeight(parseFloat(rect.getAttribute('height')) || 1000);
+      } else {
+        const sheetPath = doc.querySelector('path#sheet-boundary');
+        if (sheetPath) {
+          const dStr = sheetPath.getAttribute('d') || '';
+          const coords = dStr.match(/[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?/g);
+          const points = [];
+          if (coords) {
+            for (let i = 0; i < coords.length; i += 2) {
+              const x = parseFloat(coords[i]);
+              const y = parseFloat(coords[i+1]);
+              if (!isNaN(x) && !isNaN(y)) {
+                points.push({ x, y });
+              }
+            }
+          }
+          if (points.length > 0) {
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            points.forEach(pt => {
+              if (pt.x < minX) minX = pt.x;
+              if (pt.x > maxX) maxX = pt.x;
+              if (pt.y < minY) minY = pt.y;
+              if (pt.y > maxY) maxY = pt.y;
+            });
+            setSheetX(10);
+            setSheetY(10);
+            setSheetWidth(maxX - minX);
+            setSheetHeight(maxY - minY);
+          }
+        }
       }
 
       const polyEls = Array.from(doc.querySelectorAll('polygon'));
@@ -458,15 +495,17 @@ export default function Result() {
         });
       });
 
-      // Process path elements
-      pathEls.forEach((path, idx) => {
+      // Process path elements (filter out sheet boundary path first to prevent indexing shifts on labels mapping)
+      const cleanPathEls = pathEls.filter(path => path.getAttribute('id') !== 'sheet-boundary');
+
+      cleanPathEls.forEach((path, idx) => {
         const dStr = path.getAttribute('d') || '';
         
         // Extract outer boundary coordinate points (first subpath before second M)
         const firstM = dStr.indexOf('M');
         const secondM = dStr.indexOf('M', firstM + 1);
         const outerD = secondM !== -1 ? dStr.substring(firstM, secondM) : dStr;
-        const coords = outerD.match(/[-+]?[0-9]*\.?[0-9]+/g);
+        const coords = outerD.match(/[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?/g);
         
         const points = [];
         if (coords) {
@@ -693,17 +732,17 @@ export default function Result() {
     }
     
     try {
-      const url = `http://localhost:5000/${part.file_path}.svg`;
-      const res = await axios.get(url, { responseType: 'text' });
-      const parsedGeometry = parseSinglePartSvg(res.data);
-      setSelectedLibraryPart({
-        ...part,
-        geometry: parsedGeometry.geometry,
-        holes: parsedGeometry.holes,
-        centroid: parsedGeometry.centroid,
-        boundingBox: parsedGeometry.boundingBox,
-        rotation: 0
-      });
+      const geomRes = await api.getFileGeometry(part.id);
+      if (geomRes && geomRes.success) {
+        setSelectedLibraryPart({
+          ...part,
+          geometry: geomRes.geometry,
+          holes: geomRes.holes,
+          centroid: geomRes.centroid,
+          boundingBox: geomRes.boundingBox,
+          rotation: 0
+        });
+      }
     } catch (err) {
       console.error('Failed to load library part geometry:', err);
       alert('Error loading part geometry details.');
@@ -755,11 +794,39 @@ export default function Result() {
           boundingBox: selectedLibraryPart.boundingBox
         };
 
+        const updatedParts = [...localParts, newPart];
         setPast(prev => [...prev, localParts]);
-        setLocalParts(prev => [...prev, newPart]);
+        setLocalParts(updatedParts);
         setFuture([]);
-        setIsDirty(true);
+        setIsDirty(false);
         setSelectedLibraryPart(null);
+
+        // Auto-save immediately
+        const payloadParts = updatedParts.map(p => ({
+          id: p.id,
+          filename: p.filename,
+          x: p.x,
+          y: p.y,
+          rotation: p.rotation,
+          partId: p.partId ? parseInt(p.partId, 10) : null,
+          sheetId: p.sheetId ? parseInt(p.sheetId, 10) : 0,
+          source: p.source === 'manual' ? 'manual' : 'deepnest'
+        }));
+
+        let strategyQuery = '';
+        if (result?.nestingMode === 'multi') {
+          if (selectedLayout === 'layout1') strategyQuery = 'a';
+          else if (selectedLayout === 'layout2') strategyQuery = 'b';
+          else if (selectedLayout === 'layout3') strategyQuery = 'c';
+        }
+
+        try {
+          await api.updateLayoutPlacements(jobId, payloadParts, strategyQuery);
+          await fetchResult();
+        } catch (saveErr) {
+          console.error('Failed to auto-save manual placement:', saveErr);
+          alert('Failed to persist manual placement: ' + (saveErr.response?.data?.message || saveErr.message));
+        }
       } else {
         alert(`Placement rejected: ${validateRes.reason === 'outside_sheet' ? 'Extends outside sheet boundaries.' : 'Collides with another placed part.'}`);
       }
@@ -769,12 +836,39 @@ export default function Result() {
     }
   };
 
-  const handleDeletePart = (partId) => {
+  const handleDeletePart = async (partId) => {
+    const updatedParts = localParts.filter(p => p.id !== partId);
     setPast(prev => [...prev, localParts]);
     setFuture([]);
-    setLocalParts(prev => prev.filter(p => p.id !== partId));
+    setLocalParts(updatedParts);
     setSelectedPartId(null);
-    setIsDirty(true);
+    setIsDirty(false);
+
+    const payloadParts = updatedParts.map(p => ({
+      id: p.id,
+      filename: p.filename,
+      x: p.x,
+      y: p.y,
+      rotation: p.rotation,
+      partId: p.partId ? parseInt(p.partId, 10) : null,
+      sheetId: p.sheetId ? parseInt(p.sheetId, 10) : 0,
+      source: p.source === 'manual' ? 'manual' : 'deepnest'
+    }));
+
+    let strategyQuery = '';
+    if (result?.nestingMode === 'multi') {
+      if (selectedLayout === 'layout1') strategyQuery = 'a';
+      else if (selectedLayout === 'layout2') strategyQuery = 'b';
+      else if (selectedLayout === 'layout3') strategyQuery = 'c';
+    }
+
+    try {
+      await api.updateLayoutPlacements(jobId, payloadParts, strategyQuery);
+      await fetchResult();
+    } catch (saveErr) {
+      console.error('Failed to auto-save after delete:', saveErr);
+      alert('Failed to persist deletion: ' + (saveErr.response?.data?.message || saveErr.message));
+    }
   };
 
   const handleMovePart = (partId, nextX, nextY) => {
@@ -785,6 +879,93 @@ export default function Result() {
       }
       return p;
     }));
+  };
+
+  const handleDragEnd = async (partId) => {
+    const part = localParts.find(p => p.id === partId);
+    if (!part) return;
+
+    const performSave = async () => {
+      const payloadParts = localParts.map(p => ({
+        id: p.id,
+        filename: p.filename,
+        x: p.x,
+        y: p.y,
+        rotation: p.rotation,
+        partId: p.partId ? parseInt(p.partId, 10) : null,
+        sheetId: p.sheetId ? parseInt(p.sheetId, 10) : 0,
+        source: p.source === 'manual' ? 'manual' : 'deepnest'
+      }));
+
+      let strategyQuery = '';
+      if (result?.nestingMode === 'multi') {
+        if (selectedLayout === 'layout1') strategyQuery = 'a';
+        else if (selectedLayout === 'layout2') strategyQuery = 'b';
+        else if (selectedLayout === 'layout3') strategyQuery = 'c';
+      }
+
+      try {
+        await api.updateLayoutPlacements(jobId, payloadParts, strategyQuery);
+        await fetchResult();
+      } catch (saveErr) {
+        console.error('Failed to auto-save layout on drag end:', saveErr);
+        alert('Failed to persist dragged placement: ' + (saveErr.response?.data?.message || saveErr.message));
+      }
+    };
+
+    if (!sheetGeometry) {
+      // Standard sheet workflow: save immediately on drag end without validating
+      setPast(prev => [...prev, localPartsBeforeDrag]);
+      setFuture([]);
+      setIsDirty(false);
+      await performSave();
+      return;
+    }
+
+    try {
+      const validateRes = await api.validatePlacement(jobId, {
+        candidate: {
+          id: part.id,
+          filename: part.filename,
+          partId: part.partId ? parseInt(part.partId, 10) : null,
+          source: part.source || 'deepnest',
+          sheetId: part.sheetId || 0,
+          x: part.x,
+          y: part.y,
+          rotation: part.rotation || 0
+        },
+        placements: localParts.filter(p => p.id !== partId)
+      });
+
+      if (validateRes.success && validateRes.valid) {
+        setPast(prev => [...prev, localPartsBeforeDrag]);
+        setFuture([]);
+        setIsDirty(false);
+        await performSave();
+      } else {
+        alert(`Placement rejected: ${validateRes.reason === 'outside_sheet' ? 'Extends outside sheet/remnant boundaries.' : 'Collides with another placed part.'}`);
+        const revertedPart = localPartsBeforeDrag.find(p => p.id === partId);
+        if (revertedPart) {
+          setLocalParts(prev => prev.map(p => {
+            if (p.id === partId) {
+              return { ...p, x: revertedPart.x, y: revertedPart.y };
+            }
+            return p;
+          }));
+        }
+      }
+    } catch (err) {
+      console.error('Validation request failed on drag end:', err);
+      const revertedPart = localPartsBeforeDrag.find(p => p.id === partId);
+      if (revertedPart) {
+        setLocalParts(prev => prev.map(p => {
+          if (p.id === partId) {
+            return { ...p, x: revertedPart.x, y: revertedPart.y };
+          }
+          return p;
+        }));
+      }
+    }
   };
 
   const handleUndo = () => {
@@ -845,6 +1026,28 @@ export default function Result() {
       alert('Failed to save manual layout adjustments: ' + (err.response?.data?.message || err.message));
     } finally {
       setSavingLayout(false);
+    }
+  };
+
+  const handleFinalizeLayout = async () => {
+    if (isDirty) {
+      alert('Please save your manual adjustments before finalization.');
+      return;
+    }
+    if (!window.confirm("Are you sure you want to finalize this layout? This will generate remnants, update the inventory, and lock further manual adjustments until unlocked.")) {
+      return;
+    }
+    try {
+      setFinalizing(true);
+      await api.finalizeLayout(jobId);
+      alert("Layout finalized successfully! Remnants and scrap pieces have been added to inventory.");
+      setIsEditMode(false);
+      await fetchResult();
+    } catch (err) {
+      console.error("Failed to finalize layout:", err);
+      alert("Failed to finalize layout: " + (err.response?.data?.message || err.message));
+    } finally {
+      setFinalizing(false);
     }
   };
 
@@ -955,15 +1158,15 @@ export default function Result() {
 
             if (p.source === 'manual' && fileMatch) {
               try {
-                const url = `http://localhost:5000/${fileMatch.file_path}.svg`;
-                const res = await axios.get(url, { responseType: 'text' });
-                const parsedGeometry = parseSinglePartSvg(res.data);
-                extra = {
-                  geometry: parsedGeometry.geometry,
-                  holes: parsedGeometry.holes,
-                  centroid: parsedGeometry.centroid,
-                  boundingBox: parsedGeometry.boundingBox
-                };
+                const geomRes = await api.getFileGeometry(fileMatch.id);
+                if (geomRes && geomRes.success) {
+                  extra = {
+                    geometry: geomRes.geometry,
+                    holes: geomRes.holes,
+                    centroid: geomRes.centroid,
+                    boundingBox: geomRes.boundingBox
+                  };
+                }
               } catch (svgErr) {
                 console.error(`Failed to load manual part geometry on load:`, svgErr);
               }
@@ -1157,7 +1360,42 @@ export default function Result() {
         <Box sx={{ display: 'flex', gap: 2 }}>
           <Button
             variant={isEditMode ? 'contained' : 'outlined'}
-            onClick={() => {
+            onClick={async () => {
+              if (!isEditMode && result?.finalized) {
+                if (!window.confirm("This layout has already been finalized. Editing it will invalidate the finalized manufacturing assets. Continue?")) {
+                  return;
+                }
+                // Reset layout to Draft status immediately on the backend
+                try {
+                  setSavingLayout(true);
+                  const payloadParts = localParts.map(p => ({
+                    id: p.id,
+                    filename: p.filename,
+                    x: p.x,
+                    y: p.y,
+                    rotation: p.rotation,
+                    partId: p.partId ? parseInt(p.partId, 10) : null,
+                    sheetId: p.sheetId ? parseInt(p.sheetId, 10) : 0,
+                    source: p.source === 'manual' ? 'manual' : 'deepnest'
+                  }));
+
+                  let strategyQuery = '';
+                  if (result?.nestingMode === 'multi') {
+                    if (selectedLayout === 'layout1') strategyQuery = 'a';
+                    else if (selectedLayout === 'layout2') strategyQuery = 'b';
+                    else if (selectedLayout === 'layout3') strategyQuery = 'c';
+                  }
+
+                  await api.updateLayoutPlacements(jobId, payloadParts, strategyQuery);
+                  await fetchResult();
+                } catch (err) {
+                  console.error("Failed to reset layout to Draft:", err);
+                  alert("Failed to reset layout status to Draft: " + (err.response?.data?.message || err.message));
+                  return;
+                } finally {
+                  setSavingLayout(false);
+                }
+              }
               setIsEditMode(!isEditMode);
               setSelectedPartId(null);
             }}
@@ -1175,6 +1413,33 @@ export default function Result() {
           >
             {isEditMode ? 'Exit Manual Edit' : 'Manual Nest Adjustment'}
           </Button>
+
+          {result?.finalized ? (
+            <Chip
+              label="Layout Finalized"
+              color="success"
+              icon={<SuccessIcon />}
+              sx={{ height: 40, fontWeight: 700, px: 1, bgcolor: 'rgba(16, 185, 129, 0.2)', color: '#10b981', border: '1px solid #10b981' }}
+            />
+          ) : (
+            <Button
+              variant="contained"
+              onClick={handleFinalizeLayout}
+              disabled={finalizing || savingLayout}
+              sx={{
+                bgcolor: '#10b981',
+                color: '#ffffff',
+                textTransform: 'none',
+                fontWeight: 700,
+                height: 40,
+                '&:hover': {
+                  bgcolor: '#059669'
+                }
+              }}
+            >
+              {finalizing ? <CircularProgress size={20} color="inherit" /> : 'Finalize Layout'}
+            </Button>
+          )}
           <Button
             variant="outlined"
             startIcon={<BackIcon />}
@@ -1590,6 +1855,8 @@ export default function Result() {
                   onPlacePart={handlePlacePart}
                   onMovePart={handleMovePart}
                   sheetGeometry={sheetGeometry}
+                  onDragEnd={handleDragEnd}
+                  onRotateSelectedLibraryPart={handleRotateSelectedLibraryPart}
                 />
               </Paper>
 
@@ -1975,25 +2242,43 @@ export default function Result() {
                     
                     <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
                       {/* Sheet boundary background */}
-                      <rect 
-                        x={sheetX} 
-                        y={sheetY} 
-                        width={sheetWidth} 
-                        height={sheetHeight} 
-                        fill="#12161f" 
-                        stroke="#4f5b66" 
-                        strokeWidth="1.5"
-                      />
-                      
-                      {/* Grid overlay */}
-                      {showGrid && (
+                      {sheetGeometry ? (
+                        <path
+                          d={getPathData(sheetGeometry.outer, sheetGeometry.holes || [], sheetX, sheetY)}
+                          fill="#12161f"
+                          stroke="#0d9488"
+                          strokeWidth="2"
+                          fillRule="evenodd"
+                        />
+                      ) : (
                         <rect 
                           x={sheetX} 
                           y={sheetY} 
                           width={sheetWidth} 
                           height={sheetHeight} 
-                          fill="url(#canvas-grid)" 
+                          fill="#12161f" 
+                          stroke="#4f5b66" 
+                          strokeWidth="1.5"
                         />
+                      )}
+                      
+                      {/* Grid overlay */}
+                      {showGrid && (
+                        sheetGeometry ? (
+                          <path
+                            d={getPathData(sheetGeometry.outer, sheetGeometry.holes || [], sheetX, sheetY)}
+                            fill="url(#canvas-grid)"
+                            fillRule="evenodd"
+                          />
+                        ) : (
+                          <rect 
+                            x={sheetX} 
+                            y={sheetY} 
+                            width={sheetWidth} 
+                            height={sheetHeight} 
+                            fill="url(#canvas-grid)" 
+                          />
+                        )
                       )}
 
                       {/* Render Parsed Polygons sorted by selection for proper overlay layering */}
@@ -2010,6 +2295,10 @@ export default function Result() {
                           
                           // Manual Nest Adjustment styling
                           const part = localParts.find(p => p.id === poly.id);
+                          
+                          // If it's a manually placed part instance, skip it from parsed SVG render list to avoid duplication
+                          if (part && part.source === 'manual') return null;
+
                           let transformStr = '';
                           let isSelected = false;
 
@@ -2083,9 +2372,8 @@ export default function Result() {
                           // If manual part's geometry is not loaded yet, skip
                           if (!part.geometry || part.geometry.length === 0) return null;
 
-                          const partCentroid = getCentroid(part.geometry);
                           const pathD = getPathData(part.geometry, part.holes);
-                          const transformStr = `translate(${part.x}, ${part.y}) rotate(${part.rotation}, ${partCentroid.x}, ${partCentroid.y})`;
+                          const transformStr = `translate(${part.x + sheetX}, ${part.y + sheetY}) rotate(${part.rotation})`;
 
                           let partFill = 'rgba(187, 154, 247, 0.15)'; // Magenta/Purple translucent
                           let partStroke = '#bb9af7';

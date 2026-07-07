@@ -20,6 +20,8 @@ import {
   InputLabel,
   Select,
   MenuItem,
+  Stack,
+  Chip,
 } from '@mui/material';
 import {
   ArrowBack as BackIcon,
@@ -152,6 +154,12 @@ export default function ProjectDetails() {
     }
   }, [id, optimizationLevel, sheetSizePreset, customWidth, customHeight, selectedRemnant]);
 
+  const totalPartArea = files.reduce((sum, f) => {
+    const qty = f.quantity === undefined ? 1 : parseInt(f.quantity, 10);
+    const area = parseFloat(f.area) || 0;
+    return sum + (qty * area);
+  }, 0);
+
   const formatCurrency = (val) => {
     return new Intl.NumberFormat('en-IN', {
       style: 'currency',
@@ -194,6 +202,25 @@ export default function ProjectDetails() {
       
       const filesRes = await api.getProjectFiles(id);
       setFiles(filesRes.data);
+
+      // Check URL query parameters for remnantId
+      const queryParams = new URLSearchParams(window.location.search);
+      const remnantIdFromUrl = queryParams.get('remnantId');
+      if (remnantIdFromUrl) {
+        try {
+          const remnantRes = await api.getRemnant(remnantIdFromUrl);
+          if (remnantRes && remnantRes.success && remnantRes.data) {
+            setSelectedRemnant(remnantRes.data);
+          } else {
+            setError(`Failed to load pre-selected remnant with ID: ${remnantIdFromUrl}. Material offcut does not exist or has been deleted.`);
+            return;
+          }
+        } catch (urlRemErr) {
+          console.error('[ProjectDetails] Failed to preload remnant from URL query:', urlRemErr);
+          setError(`Failed to load pre-selected remnant with ID: ${remnantIdFromUrl}. Check database and connection.`);
+          return;
+        }
+      }
 
       await fetchRecommendations(id, matType, matThick, filesRes.data);
     } catch (err) {
@@ -416,118 +443,201 @@ export default function ProjectDetails() {
             <Grid item xs={12} md={4} sx={{ display: 'flex', flexDirection: 'column', alignItems: { xs: 'stretch', md: 'flex-end' }, gap: 2 }}>
               
               {/* Selected Remnant Info Banner */}
-              {selectedRemnant && (
-                <Alert 
-                  severity="info" 
-                  onClose={() => setSelectedRemnant(null)}
+              {selectedRemnant ? (
+                <Paper 
                   sx={{ 
-                    width: { xs: '100%', md: '220px' },
-                    bgcolor: 'rgba(6, 182, 212, 0.1)',
-                    border: '1px solid #06b6d4',
-                    color: '#ffffff',
-                    '& .MuiAlert-icon': { color: '#06b6d4' },
-                    '& .MuiAlert-message': { padding: '4px 0' },
+                    p: 2, 
+                    bgcolor: 'rgba(13, 148, 136, 0.04)', 
+                    border: '1.5px solid rgba(13, 148, 136, 0.25)', 
+                    borderRadius: '10px',
+                    width: '100%',
                     textAlign: 'left'
                   }}
                 >
-                  <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                    Using Remnant RM-{String(selectedRemnant.id).padStart(4, '0')}
-                  </Typography>
-                  <Typography variant="caption" sx={{ display: 'block', color: '#a9b1d6', mt: 0.5 }}>
-                    Size: {selectedRemnant.remaining_width} x {selectedRemnant.remaining_height} mm
-                  </Typography>
-                </Alert>
-              )}
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
+                    <Typography variant="caption" sx={{ color: '#0d9488', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.8px' }}>
+                      ✓ Stock Source
+                    </Typography>
+                    <Button 
+                      size="small" 
+                      variant="text" 
+                      color="error" 
+                      onClick={() => {
+                        setSelectedRemnant(null);
+                        // Strip query parameter from URL
+                        navigate(`/projects/${id}`, { replace: true });
+                      }}
+                      sx={{ textTransform: 'none', p: 0, minWidth: 'auto', fontSize: '0.75rem', fontWeight: 700, '&:hover': { bgcolor: 'transparent', textDecoration: 'underline' } }}
+                    >
+                      Deselect
+                    </Button>
+                  </Box>
+                  <Stack spacing={1}>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <Typography variant="caption" sx={{ color: '#565f89', fontWeight: 700 }}>Source Asset:</Typography>
+                      <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 800 }}>
+                        {selectedRemnant?.is_scrap 
+                          ? `Scrap SP-${String(selectedRemnant?.id ?? '').padStart(4, '0')}` 
+                          : `Remnant RM-${String(selectedRemnant?.id ?? '').padStart(4, '0')}`
+                        }
+                      </Typography>
+                    </Box>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <Typography variant="caption" sx={{ color: '#565f89', fontWeight: 700 }}>Geometry:</Typography>
+                      <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 800 }}>
+                        {selectedRemnant?.is_scrap ? 'Irregular Scrap' : 'Rectangular Remnant'}
+                      </Typography>
+                    </Box>
+                    {!selectedRemnant?.is_scrap && (
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <Typography variant="caption" sx={{ color: '#565f89', fontWeight: 700 }}>Width × Height:</Typography>
+                        <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 800 }}>
+                          {(selectedRemnant?.remaining_width ?? 0)} × {(selectedRemnant?.remaining_height ?? 0)} mm
+                        </Typography>
+                      </Box>
+                    )}
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <Typography variant="caption" sx={{ color: '#565f89', fontWeight: 700 }}>Stock Area:</Typography>
+                      <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 800 }}>
+                        {formatArea(selectedRemnant?.remaining_area ?? 0)}
+                      </Typography>
+                    </Box>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <Typography variant="caption" sx={{ color: '#565f89', fontWeight: 700 }}>Material:</Typography>
+                      <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 800 }}>
+                        {selectedRemnant?.material_type ?? 'N/A'}
+                      </Typography>
+                    </Box>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <Typography variant="caption" sx={{ color: '#565f89', fontWeight: 700 }}>Thickness:</Typography>
+                      <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 800 }}>
+                        {selectedRemnant?.material_thickness ?? 0} mm
+                      </Typography>
+                    </Box>
+                  </Stack>
 
-              {/* Sheet Size Selection */}
-              <FormControl size="small" sx={{ width: { xs: '100%', md: '220px' } }} disabled={!!selectedRemnant}>
-                <InputLabel id="sheet-size-label" sx={{ color: '#a9b1d6', '&.Mui-focused': { color: '#0d9488' } }}>
-                  {selectedRemnant ? 'Overridden by Remnant' : 'Sheet Stock Size'}
-                </InputLabel>
-                <Select
-                  labelId="sheet-size-label"
-                  id="sheet-size-select"
-                  value={selectedRemnant ? 'custom' : sheetSizePreset}
-                  disabled={!!selectedRemnant}
-                  label={selectedRemnant ? 'Overridden by Remnant' : 'Sheet Stock Size'}
-                  onChange={(e) => setSheetSizePreset(e.target.value)}
-                  sx={{
-                    color: '#ffffff',
-                    '.MuiOutlinedInput-notchedOutline': {
-                      borderColor: 'rgba(255, 255, 255, 0.1)',
-                    },
-                    '&:hover .MuiOutlinedInput-notchedOutline': {
-                      borderColor: '#0d9488',
-                    },
-                    '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                      borderColor: '#0d9488',
-                    },
-                    '.MuiSvgIcon-root': {
-                      color: '#a9b1d6',
-                    },
-                  }}
-                  MenuProps={{
-                    PaperProps: {
-                      sx: {
-                        bgcolor: '#0f1319',
-                        border: '1px solid rgba(255,255,255,0.1)',
+                  {files.length > 0 && (
+                    <Box sx={{ mt: 2, p: 2, bgcolor: totalPartArea > (selectedRemnant?.remaining_area ?? 0) * 0.70 ? 'rgba(239, 68, 68, 0.05)' : 'rgba(16, 185, 129, 0.05)', border: `1px solid ${totalPartArea > (selectedRemnant?.remaining_area ?? 0) * 0.70 ? 'rgba(239, 68, 68, 0.2)' : 'rgba(16, 185, 129, 0.2)'}`, borderRadius: '8px' }}>
+                      <Typography variant="subtitle2" sx={{ color: totalPartArea > (selectedRemnant?.remaining_area ?? 0) * 0.70 ? '#ef4444' : '#10b981', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                        {totalPartArea > (selectedRemnant?.remaining_area ?? 0) * 0.70 ? '⚠️ Estimated Capacity Warning' : '🟢 Stock Capacity Optimal'}
+                      </Typography>
+                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <Typography variant="caption" sx={{ color: '#a9b1d6' }}>Total Parts Area:</Typography>
+                          <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 700 }}>{formatArea(totalPartArea)}</Typography>
+                        </Box>
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <Typography variant="caption" sx={{ color: '#a9b1d6' }}>Estimated Capacity (70% yield):</Typography>
+                          <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 700 }}>{formatArea((selectedRemnant?.remaining_area ?? 0) * 0.70)}</Typography>
+                        </Box>
+                      </Box>
+                      {totalPartArea > (selectedRemnant?.remaining_area ?? 0) * 0.70 && (
+                        <Box sx={{ mt: 1.5 }}>
+                          <Typography variant="caption" sx={{ color: '#ff9e64', fontWeight: 700, display: 'block', mb: 0.5 }}>
+                            Recommendations:
+                          </Typography>
+                          <Box component="ul" sx={{ m: 0, pl: 2, color: '#a9b1d6', '& li': { fontSize: '0.75rem', mb: 0.5 } }}>
+                            <li>Consider reducing the requested part quantities in the DXF Parts Queue below.</li>
+                            <li>Choose a larger remnant sheet or rectangular offcut.</li>
+                            <li>You can still proceed, but note that the Nesting Engine may fail to place all requested parts on this sheet.</li>
+                          </Box>
+                        </Box>
+                      )}
+                    </Box>
+                  )}
+                </Paper>
+              ) : (
+                <>
+                  {/* Sheet Size Selection */}
+                  <FormControl size="small" sx={{ width: { xs: '100%', md: '220px' } }}>
+                    <InputLabel id="sheet-size-label" sx={{ color: '#a9b1d6', '&.Mui-focused': { color: '#0d9488' } }}>
+                      Sheet Stock Size
+                    </InputLabel>
+                    <Select
+                      labelId="sheet-size-label"
+                      id="sheet-size-select"
+                      value={sheetSizePreset}
+                      label="Sheet Stock Size"
+                      onChange={(e) => setSheetSizePreset(e.target.value)}
+                      sx={{
                         color: '#ffffff',
-                        '& .MuiMenuItem-root': {
-                          '&:hover': {
-                            bgcolor: 'rgba(13, 148, 136, 0.08)',
-                          },
-                          '&.Mui-selected': {
-                            bgcolor: 'rgba(13, 148, 136, 0.15)',
-                            '&:hover': {
-                              bgcolor: 'rgba(13, 148, 136, 0.2)',
+                        '.MuiOutlinedInput-notchedOutline': {
+                          borderColor: 'rgba(255, 255, 255, 0.1)',
+                        },
+                        '&:hover .MuiOutlinedInput-notchedOutline': {
+                          borderColor: '#0d9488',
+                        },
+                        '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                          borderColor: '#0d9488',
+                        },
+                        '.MuiSvgIcon-root': {
+                          color: '#a9b1d6',
+                        },
+                      }}
+                      MenuProps={{
+                        PaperProps: {
+                          sx: {
+                            bgcolor: '#0f1319',
+                            border: '1px solid rgba(255,255,255,0.1)',
+                            color: '#ffffff',
+                            '& .MuiMenuItem-root': {
+                              '&:hover': {
+                                bgcolor: 'rgba(13, 148, 136, 0.08)',
+                              },
+                              '&.Mui-selected': {
+                                bgcolor: 'rgba(13, 148, 136, 0.15)',
+                                '&:hover': {
+                                  bgcolor: 'rgba(13, 148, 136, 0.2)',
+                                },
+                              },
                             },
                           },
                         },
-                      },
-                    },
-                  }}
-                >
-                  <MenuItem value="1000x1000">1000 x 1000 mm (Default)</MenuItem>
-                  <MenuItem value="2000x1000">2000 x 1000 mm</MenuItem>
-                  <MenuItem value="3000x1500">3000 x 1500 mm</MenuItem>
-                  <MenuItem value="custom">Custom Size...</MenuItem>
-                </Select>
-              </FormControl>
- 
-              {/* Custom Size Fields */}
-              {sheetSizePreset === 'custom' && !selectedRemnant && (
-                <Box sx={{ display: 'flex', gap: 1, width: { xs: '100%', md: '220px' } }}>
-                  <TextField
-                    label="Width (mm)"
-                    type="number"
-                    size="small"
-                    value={customWidth}
-                    onChange={(e) => setCustomWidth(parseInt(e.target.value, 10) || '')}
-                    sx={{
-                      '& .MuiOutlinedInput-root': {
-                        '& fieldset': { borderColor: 'rgba(255,255,255,0.1)' },
-                        '&:hover fieldset': { borderColor: '#0d9488' },
-                      },
-                      '& .MuiInputLabel-root': { color: '#a9b1d6' },
-                      '& .MuiOutlinedInput-input': { color: '#ffffff' },
-                    }}
-                  />
-                  <TextField
-                    label="Height (mm)"
-                    type="number"
-                    size="small"
-                    value={customHeight}
-                    onChange={(e) => setCustomHeight(parseInt(e.target.value, 10) || '')}
-                    sx={{
-                      '& .MuiOutlinedInput-root': {
-                        '& fieldset': { borderColor: 'rgba(255,255,255,0.1)' },
-                        '&:hover fieldset': { borderColor: '#0d9488' },
-                      },
-                      '& .MuiInputLabel-root': { color: '#a9b1d6' },
-                      '& .MuiOutlinedInput-input': { color: '#ffffff' },
-                    }}
-                  />
-                </Box>
+                      }}
+                    >
+                      <MenuItem value="1000x1000">1000 x 1000 mm (Default)</MenuItem>
+                      <MenuItem value="2000x1000">2000 x 1000 mm</MenuItem>
+                      <MenuItem value="3000x1500">3000 x 1500 mm</MenuItem>
+                      <MenuItem value="custom">Custom Size...</MenuItem>
+                    </Select>
+                  </FormControl>
+
+                  {/* Custom Size Fields */}
+                  {sheetSizePreset === 'custom' && (
+                    <Box sx={{ display: 'flex', gap: 1, width: { xs: '100%', md: '220px' } }}>
+                      <TextField
+                        label="Width (mm)"
+                        type="number"
+                        size="small"
+                        value={customWidth}
+                        onChange={(e) => setCustomWidth(parseInt(e.target.value, 10) || '')}
+                        sx={{
+                          '& .MuiOutlinedInput-root': {
+                            '& fieldset': { borderColor: 'rgba(255,255,255,0.1)' },
+                            '&:hover fieldset': { borderColor: '#0d9488' },
+                          },
+                          '& .MuiInputLabel-root': { color: '#a9b1d6' },
+                          '& .MuiOutlinedInput-input': { color: '#ffffff' },
+                        }}
+                      />
+                      <TextField
+                        label="Height (mm)"
+                        type="number"
+                        size="small"
+                        value={customHeight}
+                        onChange={(e) => setCustomHeight(parseInt(e.target.value, 10) || '')}
+                        sx={{
+                          '& .MuiOutlinedInput-root': {
+                            '& fieldset': { borderColor: 'rgba(255,255,255,0.1)' },
+                            '&:hover fieldset': { borderColor: '#0d9488' },
+                          },
+                          '& .MuiInputLabel-root': { color: '#a9b1d6' },
+                          '& .MuiOutlinedInput-input': { color: '#ffffff' },
+                        }}
+                      />
+                    </Box>
+                  )}
+                </>
               )}
 
               {/* Optimization Level */}

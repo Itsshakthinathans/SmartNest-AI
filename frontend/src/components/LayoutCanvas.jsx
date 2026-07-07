@@ -2,12 +2,12 @@ import React, { useState, useRef } from 'react';
 import { Box, Typography } from '@mui/material';
 
 // Helper to construct path data from geometry and holes
-const getPathData = (geometry, holes = []) => {
+const getPathData = (geometry, holes = [], offsetX = 0, offsetY = 0) => {
   if (!geometry || geometry.length === 0) return '';
-  let d = `M ${geometry.map(pt => `${pt.x} ${pt.y}`).join(' L ')} Z`;
+  let d = `M ${geometry.map(pt => `${pt.x + offsetX} ${pt.y + offsetY}`).join(' L ')} Z`;
   if (holes && holes.length > 0) {
     holes.forEach(hole => {
-      d += ` M ${hole.map(pt => `${pt.x} ${pt.y}`).join(' L ')} Z`;
+      d += ` M ${hole.map(pt => `${pt.x + offsetX} ${pt.y + offsetY}`).join(' L ')} Z`;
     });
   }
   return d;
@@ -28,9 +28,9 @@ const getCentroid = (geometry) => {
 };
 
 // Extensible Ghost Preview Component
-export function GhostPreview({ part, position, status = 'neutral' }) {
+export function GhostPreview({ part, position, status = 'neutral', sheetX = 10, sheetY = 10 }) {
   if (!part || !position) return null;
-  const { geometry, holes, centroid } = part;
+  const { geometry, holes } = part;
   if (!geometry || geometry.length === 0) return null;
 
   let fill = 'rgba(56, 189, 248, 0.25)'; // neutral: cyan
@@ -46,9 +46,9 @@ export function GhostPreview({ part, position, status = 'neutral' }) {
 
   const d = getPathData(geometry, holes);
   
-  // Center translation around cursor, and apply pre-placement rotation
+  // Center translation around cursor, and apply pre-placement rotation around (0, 0)
   const rotVal = part.rotation || 0;
-  const transformStr = `translate(${position.x - centroid.x}, ${position.y - centroid.y}) rotate(${rotVal}, ${centroid.x}, ${centroid.y})`;
+  const transformStr = `translate(${position.x + sheetX}, ${position.y + sheetY}) rotate(${rotVal})`;
 
   return (
     <g transform={transformStr} style={{ pointerEvents: 'none' }}>
@@ -86,9 +86,10 @@ export default function LayoutCanvas({
   isEditMode = false,
   onPlacePart = () => {},
   onMovePart = () => {},
-  onRotateSelectedLibraryPart = () => {},
   onCancelPlacement = () => {},
-  sheetGeometry = null
+  sheetGeometry = null,
+  onDragEnd = () => {},
+  onRotateSelectedLibraryPart = () => {}
 }) {
   const containerRef = useRef(null);
   const [isPanning, setIsPanning] = useState(false);
@@ -121,27 +122,61 @@ export default function LayoutCanvas({
     };
   };
 
+  const getRotatedAndShiftedBounds = (geometry, rotation, shiftX, shiftY) => {
+    const rad = (rotation || 0) * Math.PI / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    geometry.forEach(pt => {
+      const rx = pt.x * cos - pt.y * sin + shiftX;
+      const ry = pt.x * sin + pt.y * cos + shiftY;
+      if (rx < minX) minX = rx;
+      if (rx > maxX) maxX = rx;
+      if (ry < minY) minY = ry;
+      if (ry > maxY) maxY = ry;
+    });
+    return { minX, maxX, minY, maxY };
+  };
+
   // 2. Client-side fast bounding-box collision validation
   const getValidationState = () => {
     if (!selectedLibraryPart) return 'neutral';
-    const { boundingBox } = selectedLibraryPart;
-    if (!boundingBox) return 'neutral';
+    const { geometry } = selectedLibraryPart;
+    if (!geometry) return 'neutral';
 
-    // Get candidate rotated bounds centered on mouse
-    const candBounds = getRotatedBoundingBox(
+    // Get candidate rotated bounds relative to sheet origin
+    const candBounds = getRotatedAndShiftedBounds(
+      geometry,
+      selectedLibraryPart.rotation || 0,
       ghostPos.x,
-      ghostPos.y,
-      boundingBox.width,
-      boundingBox.height,
-      selectedLibraryPart.rotation || 0
+      ghostPos.y
     );
 
     // Containment within sheet check (sheet boundaries relative to sheet coordinate space)
-    // Wait, the sheet starts at sheetX, sheetY, and has width sheetWidth, height sheetHeight
-    const insideSheet = candBounds.minX >= sheetX &&
-                        candBounds.minY >= sheetY &&
-                        candBounds.maxX <= (sheetX + sheetWidth) &&
-                        candBounds.maxY <= (sheetY + sheetHeight);
+    let sMinX = 0;
+    let sMaxX = sheetWidth;
+    let sMinY = 0;
+    let sMaxY = sheetHeight;
+
+    if (sheetGeometry && sheetGeometry.outer) {
+      let minSX = Infinity, maxSX = -Infinity, minSY = Infinity, maxSY = -Infinity;
+      sheetGeometry.outer.forEach(pt => {
+        if (pt.x < minSX) minSX = pt.x;
+        if (pt.x > maxSX) maxSX = pt.x;
+        if (pt.y < minSY) minSY = pt.y;
+        if (pt.y > maxSY) maxSY = pt.y;
+      });
+      sMinX = minSX;
+      sMaxX = maxSX;
+      sMinY = minSY;
+      sMaxY = maxSY;
+    }
+
+    const tolerance = 0.01;
+    const insideSheet = candBounds.minX >= sMinX - tolerance &&
+                        candBounds.minY >= sMinY - tolerance &&
+                        candBounds.maxX <= sMaxX + tolerance &&
+                        candBounds.maxY <= sMaxY + tolerance;
 
     if (!insideSheet) return 'invalid';
 
@@ -149,26 +184,28 @@ export default function LayoutCanvas({
     for (const pl of placements) {
       let plBounds;
       if (pl.source === 'manual') {
-        const plCentroid = getCentroid(pl.geometry);
-        plBounds = getRotatedBoundingBox(
-          pl.x + plCentroid.x,
-          pl.y + plCentroid.y,
-          pl.boundingBox.width,
-          pl.boundingBox.height,
-          pl.rotation
+        plBounds = getRotatedAndShiftedBounds(
+          pl.geometry,
+          pl.rotation,
+          pl.x,
+          pl.y
         );
       } else {
         const poly = parsedPolygons.find(p => p.id === pl.id);
         if (!poly) continue;
         const dx = pl.x - pl.originalX;
         const dy = pl.y - pl.originalY;
-        plBounds = getRotatedBoundingBox(
-          poly.centroidX + dx,
-          poly.centroidY + dy,
-          poly.width || 100,
-          poly.height || 100,
-          pl.rotation
-        );
+        // Compute exact bounding box of standard nested part from its parsed coordinates
+        let minPX = Infinity, maxPX = -Infinity, minPY = Infinity, maxPY = -Infinity;
+        poly.points.forEach(pt => {
+          const rx = pt.x + dx - sheetX;
+          const ry = pt.y + dy - sheetY;
+          if (rx < minPX) minPX = rx;
+          if (rx > maxPX) maxPX = rx;
+          if (ry < minPY) minPY = ry;
+          if (ry > maxPY) maxPY = ry;
+        });
+        plBounds = { minX: minPX, maxX: maxPX, minY: minPY, maxY: maxPY };
       }
 
       // Overlap intersection
@@ -210,7 +247,7 @@ export default function LayoutCanvas({
     // 1. Ghost preview tracking
     if (selectedLibraryPart) {
       const coords = getCanvasRelativeCoords(e.clientX, e.clientY);
-      setGhostPos(coords);
+      setGhostPos({ x: coords.x - sheetX, y: coords.y - sheetY });
       return;
     }
 
@@ -235,13 +272,38 @@ export default function LayoutCanvas({
 
   const handleMouseUp = () => {
     setIsPanning(false);
-    setDraggingPartId(null);
+    if (draggingPartId !== null) {
+      onDragEnd(draggingPartId);
+      setDraggingPartId(null);
+    }
+  };
+
+  const handleKeyDown = (e) => {
+    if (selectedLibraryPart && (e.key === 'r' || e.key === 'R')) {
+      e.preventDefault();
+      onRotateSelectedLibraryPart(90);
+    }
+    if (selectedLibraryPart && (e.key === 'l' || e.key === 'L')) {
+      e.preventDefault();
+      if (e.shiftKey) {
+        onRotateSelectedLibraryPart(90);
+      } else {
+        onRotateSelectedLibraryPart(15);
+      }
+    }
+    if (selectedLibraryPart && e.key === 'Escape') {
+      e.preventDefault();
+      onCancelPlacement();
+    }
   };
 
   const handleCanvasClick = (e) => {
     if (selectedLibraryPart && e.button === 0) {
+      if (getValidationState() === 'invalid') {
+        return; // Do NOT allow placement if invalid
+      }
       const coords = getCanvasRelativeCoords(e.clientX, e.clientY);
-      onPlacePart(coords);
+      onPlacePart({ x: coords.x - sheetX, y: coords.y - sheetY });
     }
   };
 
@@ -249,9 +311,6 @@ export default function LayoutCanvas({
   const handleWheel = (e) => {
     if (selectedLibraryPart) {
       e.preventDefault();
-      // Delta scroll rotation
-      const dir = e.deltaY < 0 ? 1 : -1;
-      onRotateSelectedLibraryPart(dir * 15);
     }
   };
 
@@ -275,6 +334,8 @@ export default function LayoutCanvas({
       onClick={handleCanvasClick}
       onWheel={handleWheel}
       onContextMenu={handleContextMenu}
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
       sx={{
         width: '100%',
         height: '500px',
@@ -287,7 +348,10 @@ export default function LayoutCanvas({
         userSelect: 'none',
         display: 'flex',
         justifyContent: 'center',
-        alignItems: 'center'
+        alignItems: 'center',
+        '&:focus': {
+          outline: 'none'
+        }
       }}
     >
       {/* Floating HUD Panel */}
@@ -329,7 +393,7 @@ export default function LayoutCanvas({
           {/* Sheet boundary background */}
           {sheetGeometry ? (
             <path
-              d={getPathData(sheetGeometry.outer, sheetGeometry.holes || [])}
+              d={getPathData(sheetGeometry.outer, sheetGeometry.holes || [], sheetX, sheetY)}
               fill="#12161f"
               stroke="#0d9488"
               strokeWidth="2"
@@ -351,7 +415,7 @@ export default function LayoutCanvas({
           {showGrid && (
             sheetGeometry ? (
               <path
-                d={getPathData(sheetGeometry.outer, sheetGeometry.holes || [])}
+                d={getPathData(sheetGeometry.outer, sheetGeometry.holes || [], sheetX, sheetY)}
                 fill="url(#canvas-grid)"
                 fillRule="evenodd"
               />
@@ -425,9 +489,8 @@ export default function LayoutCanvas({
               const isHovered = hoveredPartId === part.id;
               const isSelected = selectedPlacementId === part.id;
 
-              const partCentroid = getCentroid(part.geometry);
               const pathD = getPathData(part.geometry, part.holes);
-              const transformStr = `translate(${part.x}, ${part.y}) rotate(${part.rotation}, ${partCentroid.x}, ${partCentroid.y})`;
+              const transformStr = `translate(${part.x + sheetX}, ${part.y + sheetY}) rotate(${part.rotation})`;
 
               let partFill = 'rgba(187, 154, 247, 0.15)'; // Magenta/Purple translucent
               let partStroke = '#bb9af7';
@@ -468,6 +531,8 @@ export default function LayoutCanvas({
               part={selectedLibraryPart}
               position={ghostPos}
               status={validationState}
+              sheetX={sheetX}
+              sheetY={sheetY}
             />
           )}
         </g>
