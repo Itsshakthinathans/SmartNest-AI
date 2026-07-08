@@ -952,14 +952,22 @@ const exportJSON = async (jobId, res) => {
     const layoutObj = JSON.parse(rawPlacements);
 
     // Map placements to standard coordinates formatting
-    const placementsRaw = (layoutObj.placements && layoutObj.placements[0] && layoutObj.placements[0].sheetplacements) || [];
-    const placements = placementsRaw.map(p => ({
-      partId: p.id,
-      fileName: p.filename || '',
-      x: parseFloat(p.x),
-      y: parseFloat(p.y),
-      rotation: parseFloat(p.rotation)
-    }));
+    const placements = [];
+    if (layoutObj.placements && Array.isArray(layoutObj.placements)) {
+      layoutObj.placements.forEach((sheetPlacement, sheetIdx) => {
+        const sheetPlacements = sheetPlacement.sheetplacements || [];
+        sheetPlacements.forEach(p => {
+          placements.push({
+            partId: p.id,
+            fileName: p.filename || '',
+            x: parseFloat(p.x),
+            y: parseFloat(p.y),
+            rotation: parseFloat(p.rotation),
+            sheetId: p.sheetId !== undefined ? p.sheetId : (sheetPlacement.sheetid !== undefined ? sheetPlacement.sheetid : sheetIdx)
+          });
+        });
+      });
+    }
 
     const sheetWidth = job.sheet_width || 1000;
     const sheetHeight = job.sheet_height || 1000;

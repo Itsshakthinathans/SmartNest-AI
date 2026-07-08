@@ -96,7 +96,7 @@ export default function LayoutCanvas({
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [ghostPos, setGhostPos] = useState({ x: 0, y: 0 });
   const [dragStartPartPos, setDragStartPartPos] = useState({ x: 0, y: 0 });
-  const [dragStartMouse, setDragStartMouse] = useState({ x: 0, y: 0 });
+  const numSheets = Math.max(1, ...placements.map(p => (p.sheetId || 0) + 1));
 
   // Handle pointer transformations
   const getCanvasRelativeCoords = (clientX, clientY) => {
@@ -391,44 +391,71 @@ export default function LayoutCanvas({
 
         <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
           {/* Sheet boundary background */}
-          {sheetGeometry ? (
-            <path
-              d={getPathData(sheetGeometry.outer, sheetGeometry.holes || [], sheetX, sheetY)}
-              fill="#12161f"
-              stroke="#0d9488"
-              strokeWidth="2"
-              fillRule="evenodd"
-            />
-          ) : (
-            <rect
-              x={sheetX}
-              y={sheetY}
-              width={sheetWidth}
-              height={sheetHeight}
-              fill="#12161f"
-              stroke="#4f5b66"
-              strokeWidth="1.5"
-            />
-          )}
+          {Array.from({ length: numSheets }).map((_, sheetIdx) => {
+            const yOffset = sheetIdx * (sheetHeight + 50);
+            return sheetGeometry ? (
+              <path
+                key={`sheet-boundary-${sheetIdx}`}
+                d={getPathData(sheetGeometry.outer, sheetGeometry.holes || [], sheetX, sheetY + yOffset)}
+                fill="#12161f"
+                stroke="#0d9488"
+                strokeWidth="2"
+                fillRule="evenodd"
+              />
+            ) : (
+              <rect
+                key={`sheet-boundary-${sheetIdx}`}
+                x={sheetX}
+                y={sheetY + yOffset}
+                width={sheetWidth}
+                height={sheetHeight}
+                fill="#12161f"
+                stroke="#4f5b66"
+                strokeWidth="1.5"
+              />
+            );
+          })}
 
           {/* Grid overlay */}
-          {showGrid && (
-            sheetGeometry ? (
+          {showGrid && Array.from({ length: numSheets }).map((_, sheetIdx) => {
+            const yOffset = sheetIdx * (sheetHeight + 50);
+            return sheetGeometry ? (
               <path
-                d={getPathData(sheetGeometry.outer, sheetGeometry.holes || [], sheetX, sheetY)}
+                key={`sheet-grid-${sheetIdx}`}
+                d={getPathData(sheetGeometry.outer, sheetGeometry.holes || [], sheetX, sheetY + yOffset)}
                 fill="url(#canvas-grid)"
                 fillRule="evenodd"
               />
             ) : (
               <rect
+                key={`sheet-grid-${sheetIdx}`}
                 x={sheetX}
-                y={sheetY}
+                y={sheetY + yOffset}
                 width={sheetWidth}
                 height={sheetHeight}
                 fill="url(#canvas-grid)"
               />
-            )
-          )}
+            );
+          })}
+
+          {/* Sheet Labels */}
+          {Array.from({ length: numSheets }).map((_, sheetIdx) => {
+            const yOffset = sheetIdx * (sheetHeight + 50);
+            return (
+              <text
+                key={`sheet-label-${sheetIdx}`}
+                x={sheetX + 10}
+                y={sheetY + yOffset + 25}
+                fill="#a9b1d6"
+                fontSize="14"
+                fontWeight="700"
+                fontFamily="sans-serif"
+                style={{ pointerEvents: 'none' }}
+              >
+                Sheet {sheetIdx + 1}
+              </text>
+            );
+          })}
 
           {/* Render Parsed Polygons / Sheets */}
           {parsedPolygons.map((poly, idx) => {
@@ -490,7 +517,8 @@ export default function LayoutCanvas({
               const isSelected = selectedPlacementId === part.id;
 
               const pathD = getPathData(part.geometry, part.holes);
-              const transformStr = `translate(${part.x + sheetX}, ${part.y + sheetY}) rotate(${part.rotation})`;
+              const yOffset = (part.sheetId || 0) * (sheetHeight + 50);
+              const transformStr = `translate(${part.x + sheetX}, ${part.y + sheetY + yOffset}) rotate(${part.rotation})`;
 
               let partFill = 'rgba(187, 154, 247, 0.15)'; // Magenta/Purple translucent
               let partStroke = '#bb9af7';

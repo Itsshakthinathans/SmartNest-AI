@@ -653,7 +653,43 @@ function getInnerNfp(A, B, config) {
   }
   var frame = getFrame(A);
   var nfp = getOuterNfp(frame, B, true);
-  if (!nfp || !nfp.children || nfp.children.length == 0) return null;
+  if (!nfp || !nfp.children || nfp.children.length == 0) {
+    const scale = config.clipperScale || 10000000;
+    const clipperSheet = toClipperCoordinates(A);
+    ClipperLib.JS.ScaleUpPath(clipperSheet, scale);
+    
+    const clipperPart = toClipperCoordinates(B);
+    ClipperLib.JS.ScaleUpPath(clipperPart, scale);
+    
+    for (let i = 0; i < clipperPart.length; i++) {
+      clipperPart[i].X *= -1;
+      clipperPart[i].Y *= -1;
+    }
+    
+    const solution = ClipperLib.Clipper.MinkowskiSum(clipperSheet, clipperPart, true);
+    let clipperNfpPath = null;
+    let maxArea = 0;
+    for (let i = 0; i < solution.length; i++) {
+      const area = ClipperLib.Clipper.Area(solution[i]);
+      if (area > 0 && area > maxArea) {
+        clipperNfpPath = solution[i];
+        maxArea = area;
+      }
+    }
+    
+    if (clipperNfpPath) {
+      const nestNfpPath = toNestCoordinates(clipperNfpPath, scale);
+      for (let i = 0; i < nestNfpPath.length; i++) {
+        nestNfpPath[i].x += B[0].x;
+        nestNfpPath[i].y += B[0].y;
+      }
+      nfp = {
+        children: [nestNfpPath]
+      };
+    } else {
+      return null;
+    }
+  }
 
   var holes = [];
   if (A.children && A.children.length > 0) {
@@ -2143,29 +2179,36 @@ const updateLayoutFiles = async (jobId, projectFiles, placements, strategy = nul
   });
   const newUtilization = sheetArea > 0 ? (placedArea / sheetArea) * 100 : 0;
 
+  const sheetPlacementsMap = {};
+  sheetplacements.forEach(p => {
+    const sId = p.sheetId || 0;
+    if (!sheetPlacementsMap[sId]) {
+      sheetPlacementsMap[sId] = [];
+    }
+    sheetPlacementsMap[sId].push(p);
+  });
+
+  const maxSheetId = Math.max(0, ...sheetplacements.map(p => p.sheetId || 0));
+  const placementsArray = [];
+  for (let sId = 0; sId <= maxSheetId; sId++) {
+    placementsArray.push({
+      sheet: job.remnant_id ? sheet : null,
+      sheetid: sId,
+      sheetplacements: sheetPlacementsMap[sId] || []
+    });
+  }
+
   const result = {
     utilisation: newUtilization,
-    placements: [
-      {
-        sheetplacements
-      }
-    ]
+    placements: placementsArray
   };
 
   // 4. Render new SVG content
-  let svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="${sheetWidth + 100}" height="${sheetHeight + 100}" style="background:#1e1e24; padding:20px; border-radius:10px;">\n`;
-  if (job.remnant_id && sheet && sheet.length > 0) {
-    let sheetPathD = `M ${sheet.map(pt => `${pt.x + 10} ${pt.y + 10}`).join(' L ')} Z`;
-    if (sheet.children && sheet.children.length > 0) {
-      sheet.children.forEach(child => {
-        sheetPathD += ` M ${child.map(pt => `${pt.x + 10} ${pt.y + 10}`).join(' L ')} Z`;
-      });
-    }
-    svgContent += `  <path id="sheet-boundary" d="${sheetPathD}" fill="none" stroke="#0d9488" stroke-width="2" fill-rule="evenodd" />\n`;
-  } else {
-    svgContent += `  <rect x="10" y="10" width="${sheetWidth}" height="${sheetHeight}" fill="none" stroke="#565f89" stroke-width="2" stroke-dasharray="5,5" />\n`;
-  }
-  svgContent += `  <text x="20" y="30" fill="#a9b1d6" font-family="sans-serif" font-size="14">Sheet: ${sheetWidth} x ${sheetHeight} - Placed Parts: ${sheetplacements.length}/${partsToNest.length} - Utilization: ${result.utilisation.toFixed(2)}%</text>\n`;
+  const sheetSpacing = 50;
+  const numSheets = result.placements && result.placements.length > 0 ? result.placements.length : 1;
+  const totalSvgHeight = numSheets * sheetHeight + (numSheets - 1) * sheetSpacing + 100;
+
+  let svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="${sheetWidth + 100}" height="${totalSvgHeight}" style="background:#1e1e24; padding:20px; border-radius:10px;">\n`;
 
   const colors = [
     "#ff9e64", "#9ece6a", "#73daca", "#b4f9f8", 
@@ -2173,44 +2216,76 @@ const updateLayoutFiles = async (jobId, projectFiles, placements, strategy = nul
   ];
 
   const obstacles = [];
-  sheetplacements.forEach((placement, idx) => {
-    const origPart = partsToNest.find(p => p.partId === placement.partId) || partsToNest.find(p => p.id === placement.id) || partsToNest.find(p => p.filename === placement.filename);
-    if (!origPart) return;
+  result.placements.forEach((sheetPlacement, sheetIdx) => {
+    const yOffset = sheetIdx * (sheetHeight + sheetSpacing);
 
-    const renderOuter = rotatePolygon(origPart.originalPoints || origPart, placement.rotation);
-    const shiftedOuter = shiftPolygon(renderOuter, placement);
-    
-    let minPX = Infinity;
-    let maxPX = -Infinity;
-    let minPY = Infinity;
-    let maxPY = -Infinity;
-    shiftedOuter.forEach(pt => {
-      if (pt.x < minPX) minPX = pt.x;
-      if (pt.x > maxPX) maxPX = pt.x;
-      if (pt.y < minPY) minPY = pt.y;
-      if (pt.y > maxPY) maxPY = pt.y;
-    });
-    obstacles.push({ minX: minPX, minY: minPY, maxX: maxPX, maxY: maxPY });
-
-    let pathD = `M ${shiftedOuter.map(p => `${p.x + 10} ${p.y + 10}`).join(' L ')} Z`;
-    
-    const originalChildren = origPart.originalChildren || origPart.children;
-    if (originalChildren && originalChildren.length > 0) {
-      originalChildren.forEach(child => {
-        const renderChild = rotatePolygon(child, placement.rotation);
-        const shiftedChild = shiftPolygon(renderChild, placement);
-        pathD += ` M ${shiftedChild.map(p => `${p.x + 10} ${p.y + 10}`).join(' L ')} Z`;
-      });
+    if (job.remnant_id && sheet && sheet.length > 0) {
+      let sheetPathD = `M ${sheet.map(pt => `${pt.x + 10} ${pt.y + yOffset + 10}`).join(' L ')} Z`;
+      if (sheet.children && sheet.children.length > 0) {
+        sheet.children.forEach(child => {
+          sheetPathD += ` M ${child.map(pt => `${pt.x + 10} ${pt.y + yOffset + 10}`).join(' L ')} Z`;
+        });
+      }
+      svgContent += `  <path id="sheet-boundary" d="${sheetPathD}" fill="none" stroke="#0d9488" stroke-width="2" fill-rule="evenodd" />\n`;
+    } else {
+      svgContent += `  <rect x="10" y="${yOffset + 10}" width="${sheetWidth}" height="${sheetHeight}" fill="none" stroke="#565f89" stroke-width="2" stroke-dasharray="5,5" />\n`;
     }
 
-    shiftedOuter.forEach(pt => {
-      if (pt.x > maxX) maxX = pt.x;
-      if (pt.y > maxY) maxY = pt.y;
+    let sheetPlacedArea = 0;
+    sheetPlacement.sheetplacements.forEach(p => {
+      const origPart = partsToNest.find(part => part.partId === p.partId) || partsToNest.find(part => part.id === p.id) || partsToNest.find(part => part.filename === p.filename);
+      if (origPart) sheetPlacedArea += polygonMaterialArea(origPart);
     });
+    const sheetAreaValue = sheetWidth * sheetHeight;
+    const sheetUtil = sheetAreaValue > 0 ? (sheetPlacedArea / sheetAreaValue) * 100 : 0;
 
-    const color = colors[idx % colors.length];
-    svgContent += `  <path d="${pathD}" fill="${color}33" stroke="${color}" stroke-width="2" fill-rule="evenodd" />\n`;
-    svgContent += `  <text x="${placement.x + 20}" y="${placement.y + 30}" fill="#ffffff" font-family="sans-serif" font-size="10">Part ${placement.id}</text>\n`;
+    svgContent += `  <text x="20" y="${yOffset + 30}" fill="#a9b1d6" font-family="sans-serif" font-size="14">Sheet ${sheetIdx + 1}: ${sheetWidth} x ${sheetHeight} - Placed Parts: ${sheetPlacement.sheetplacements.length}/${partsToNest.length} - Utilization: ${sheetUtil.toFixed(2)}%</text>\n`;
+
+    sheetPlacement.sheetplacements.forEach((placement, idx) => {
+      const origPart = partsToNest.find(p => p.partId === placement.partId) || partsToNest.find(p => p.id === placement.id) || partsToNest.find(p => p.filename === placement.filename);
+      if (!origPart) return;
+
+      const renderOuter = rotatePolygon(origPart.originalPoints || origPart, placement.rotation);
+      const drawingShift = { ...placement, y: placement.y + yOffset };
+      const shiftedOuter = shiftPolygon(renderOuter, drawingShift);
+      
+      if (sheetIdx === 0) {
+        let minPX = Infinity;
+        let maxPX = -Infinity;
+        let minPY = Infinity;
+        let maxPY = -Infinity;
+        const normalShiftedOuter = shiftPolygon(renderOuter, placement);
+        normalShiftedOuter.forEach(pt => {
+          if (pt.x < minPX) minPX = pt.x;
+          if (pt.x > maxPX) maxPX = pt.x;
+          if (pt.y < minPY) minPY = pt.y;
+          if (pt.y > maxPY) maxPY = pt.y;
+        });
+        obstacles.push({ minX: minPX, minY: minPY, maxX: maxPX, maxY: maxPY });
+      }
+
+      let pathD = `M ${shiftedOuter.map(p => `${p.x + 10} ${p.y + 10}`).join(' L ')} Z`;
+      
+      const originalChildren = origPart.originalChildren || origPart.children;
+      if (originalChildren && originalChildren.length > 0) {
+        originalChildren.forEach(child => {
+          const renderChild = rotatePolygon(child, placement.rotation);
+          const shiftedChild = shiftPolygon(renderChild, drawingShift);
+          pathD += ` M ${shiftedChild.map(p => `${p.x + 10} ${p.y + 10}`).join(' L ')} Z`;
+        });
+      }
+
+      const color = colors[idx % colors.length];
+      
+      const localShiftedOuter = shiftPolygon(renderOuter, placement);
+      localShiftedOuter.forEach(pt => {
+        if (pt.x > maxX) maxX = pt.x;
+        if (pt.y > maxY) maxY = pt.y;
+      });
+
+      svgContent += `  <path d="${pathD}" fill="${color}33" stroke="${color}" stroke-width="2" fill-rule="evenodd" />\n`;
+      svgContent += `  <text x="${placement.x + 20}" y="${placement.y + yOffset + 30}" fill="#ffffff" font-family="sans-serif" font-size="10">Part ${placement.id}</text>\n`;
+    });
   });
 
   svgContent += `</svg>`;

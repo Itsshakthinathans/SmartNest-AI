@@ -927,18 +927,24 @@ const getLayoutPlacements = async (req, res) => {
 
     const rawData = fs.readFileSync(jsonPath, 'utf8');
     const layout = JSON.parse(rawData);
-    const placements = (layout.placements && layout.placements[0] && layout.placements[0].sheetplacements) || [];
-
-    const parts = placements.map(p => ({
-      id: p.id,
-      filename: p.filename || '',
-      x: p.x,
-      y: p.y,
-      rotation: p.rotation,
-      partId: p.partId || null,
-      sheetId: p.sheetId || 0,
-      source: p.source === 'manual' ? 'manual' : 'deepnest'
-    }));
+    const parts = [];
+    if (layout.placements && Array.isArray(layout.placements)) {
+      layout.placements.forEach((sheetPlacement, sheetIdx) => {
+        const sheetPlacements = sheetPlacement.sheetplacements || [];
+        sheetPlacements.forEach(p => {
+          parts.push({
+            id: p.id,
+            filename: p.filename || '',
+            x: p.x,
+            y: p.y,
+            rotation: p.rotation,
+            partId: p.partId || null,
+            sheetId: p.sheetId !== undefined ? p.sheetId : (sheetPlacement.sheetid !== undefined ? sheetPlacement.sheetid : sheetIdx),
+            source: p.source === 'manual' ? 'manual' : 'deepnest'
+          });
+        });
+      });
+    }
 
     return res.status(200).json({ parts });
 
@@ -1435,7 +1441,18 @@ const finalizeLayout = async (req, res) => {
     }
 
     const layoutData = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
-    const placements = layoutData.placements[0].sheetplacements;
+    const placements = [];
+    if (layoutData.placements && Array.isArray(layoutData.placements)) {
+      layoutData.placements.forEach((sheetPlacement, sheetIdx) => {
+        const sheetPlacements = sheetPlacement.sheetplacements || [];
+        sheetPlacements.forEach(p => {
+          placements.push({
+            ...p,
+            sheetId: p.sheetId !== undefined ? p.sheetId : (sheetPlacement.sheetid !== undefined ? sheetPlacement.sheetid : sheetIdx)
+          });
+        });
+      });
+    }
     const utilization = layoutData.utilisation;
 
     let sheet = null;

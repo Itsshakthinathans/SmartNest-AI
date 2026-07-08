@@ -21,6 +21,9 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  Dialog,
+  DialogTitle,
+  DialogContent,
 } from '@mui/material';
 import {
   ArrowBack as BackIcon,
@@ -38,6 +41,9 @@ import {
   Chat as ChatIcon,
   SmartToy as CopilotIcon,
   Person as UserIcon,
+  Fullscreen as FullscreenIcon,
+  FullscreenExit as FullscreenExitIcon,
+  FitScreen as FitIcon,
 } from '@mui/icons-material';
 import api from '../services/api';
 import PartsLibrary from '../components/PartsLibrary';
@@ -141,6 +147,8 @@ export default function Result() {
   const navigate = useNavigate();
   const pollTimerRef = useRef(null);
   const canvasRef = useRef(null);
+  const [isFullscreenOpen, setIsFullscreenOpen] = useState(false);
+  const fullscreenCanvasRef = useRef(null);
 
   const [status, setStatus] = useState('pending');
   const [result, setResult] = useState(null);
@@ -387,7 +395,7 @@ export default function Result() {
   // Handle programmatically attaching wheel listener to prevent standard page scroll
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    const fullscreenCanvas = fullscreenCanvasRef.current;
 
     const onWheel = (e) => {
       e.preventDefault();
@@ -397,11 +405,45 @@ export default function Result() {
       setZoom(constrainedZoom);
     };
 
-    canvas.addEventListener('wheel', onWheel, { passive: false });
+    if (canvas) {
+      canvas.addEventListener('wheel', onWheel, { passive: false });
+    }
+    if (fullscreenCanvas) {
+      fullscreenCanvas.addEventListener('wheel', onWheel, { passive: false });
+    }
+
     return () => {
-      canvas.removeEventListener('wheel', onWheel);
+      if (canvas) {
+        canvas.removeEventListener('wheel', onWheel);
+      }
+      if (fullscreenCanvas) {
+        fullscreenCanvas.removeEventListener('wheel', onWheel);
+      }
     };
-  }, [zoom]);
+  }, [zoom, isFullscreenOpen, result]);
+
+  // Automatically Fit to View when fullscreen mode is opened
+  useEffect(() => {
+    if (isFullscreenOpen) {
+      const timer = setTimeout(() => {
+        const canvas = fullscreenCanvasRef.current;
+        if (!canvas) return;
+        const rect = canvas.getBoundingClientRect();
+        const padding = 40;
+        const scaleX = (rect.width - padding) / sheetWidth;
+        const scaleY = (rect.height - padding) / sheetHeight;
+        const nextZoom = Math.min(scaleX, scaleY);
+        setZoom(Math.max(0.2, Math.min(10, nextZoom)));
+        // Center the sheet in viewport
+        const sheetCenterX = sheetWidth / 2;
+        const sheetCenterY = sheetHeight / 2;
+        const panX = rect.width / 2 - sheetCenterX * nextZoom;
+        const panY = rect.height / 2 - sheetCenterY * nextZoom;
+        setPan({ x: panX, y: panY });
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [isFullscreenOpen, result, sheetWidth, sheetHeight]);
 
   // Parse SVG geometries client-side for dynamic rendering
   useEffect(() => {
@@ -1235,8 +1277,7 @@ export default function Result() {
   const handleMouseUp = () => {
     setIsDragging(false);
     if (draggingPartId !== null) {
-      setPast(prev => [...prev, localPartsBeforeDrag]);
-      setFuture([]);
+      handleDragEnd(draggingPartId);
     }
     setDraggingPartId(null);
   };
@@ -1246,6 +1287,23 @@ export default function Result() {
   const handleResetZoom = () => {
     setZoom(1);
     setPan({ x: 0, y: 0 });
+  };
+
+  const handleFitToView = () => {
+    const canvas = isFullscreenOpen ? fullscreenCanvasRef.current : canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const padding = 40;
+    const scaleX = (rect.width - padding) / sheetWidth;
+    const scaleY = (rect.height - padding) / sheetHeight;
+    const nextZoom = Math.min(scaleX, scaleY);
+    setZoom(Math.max(0.2, Math.min(10, nextZoom)));
+    // Center the sheet in viewport
+    const sheetCenterX = sheetWidth / 2;
+    const sheetCenterY = sheetHeight / 2;
+    const panX = rect.width / 2 - sheetCenterX * nextZoom;
+    const panY = rect.height / 2 - sheetCenterY * nextZoom;
+    setPan({ x: panX, y: panY });
   };
 
   // Render Loading / Processing state
@@ -1278,6 +1336,8 @@ export default function Result() {
       </Box>
     );
   }
+
+  const numSheets = Math.max(1, ...localParts.map(p => (p.sheetId || 0) + 1));
 
   const activeUtilization = parseFloat(
     (result?.nestingMode === 'multi' && result[selectedLayout])
@@ -1345,6 +1405,229 @@ export default function Result() {
   const activeTotalEstimatedCost = result?.nestingMode === 'multi'
     ? (activeMaterialCost - activeScrapValue)
     : parseFloat(result?.totalEstimatedCost ?? 0);
+
+  const renderLayoutSvg = () => {
+    if (!svgContent) {
+      return (
+        <Box sx={{ p: 4, color: '#565f89', display: 'flex', alignItems: 'center' }}>
+          <CircularProgress size={30} sx={{ mr: 2 }} />
+          Loading visual preview...
+        </Box>
+      );
+    }
+
+    return (
+      <svg
+        width="100%"
+        height="100%"
+        style={{ display: 'block' }}
+      >
+        <defs>
+          <pattern id="canvas-grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(255, 255, 255, 0.03)" strokeWidth="1" />
+          </pattern>
+        </defs>
+        
+        <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
+          {/* Sheet boundary background */}
+          {Array.from({ length: numSheets }).map((_, sheetIdx) => {
+            const yOffset = sheetIdx * (sheetHeight + 50);
+            return sheetGeometry ? (
+              <path
+                key={`sheet-boundary-${sheetIdx}`}
+                d={getPathData(sheetGeometry.outer, sheetGeometry.holes || [], sheetX, sheetY + yOffset)}
+                fill="#12161f"
+                stroke="#0d9488"
+                strokeWidth="2"
+                fillRule="evenodd"
+              />
+            ) : (
+              <rect 
+                key={`sheet-boundary-${sheetIdx}`}
+                x={sheetX} 
+                y={sheetY + yOffset} 
+                width={sheetWidth} 
+                height={sheetHeight} 
+                fill="#12161f" 
+                stroke="#4f5b66" 
+                strokeWidth="1.5"
+              />
+            );
+          })}
+          
+          {/* Grid overlay */}
+          {showGrid && Array.from({ length: numSheets }).map((_, sheetIdx) => {
+            const yOffset = sheetIdx * (sheetHeight + 50);
+            return sheetGeometry ? (
+              <path
+                key={`sheet-grid-${sheetIdx}`}
+                d={getPathData(sheetGeometry.outer, sheetGeometry.holes || [], sheetX, sheetY + yOffset)}
+                fill="url(#canvas-grid)"
+                fillRule="evenodd"
+              />
+            ) : (
+              <rect 
+                key={`sheet-grid-${sheetIdx}`}
+                x={sheetX} 
+                y={sheetY + yOffset} 
+                width={sheetWidth} 
+                height={sheetHeight} 
+                fill="url(#canvas-grid)" 
+              />
+            );
+          })}
+
+          {/* Sheet Labels */}
+          {Array.from({ length: numSheets }).map((_, sheetIdx) => {
+            const yOffset = sheetIdx * (sheetHeight + 50);
+            return (
+              <text
+                key={`sheet-label-${sheetIdx}`}
+                x={sheetX + 10}
+                y={sheetY + yOffset + 25}
+                fill="#a9b1d6"
+                fontSize="14"
+                fontWeight="700"
+                fontFamily="sans-serif"
+                style={{ pointerEvents: 'none' }}
+              >
+                Sheet {sheetIdx + 1}
+              </text>
+            );
+          })}
+
+          {/* Render Parsed Polygons sorted by selection for proper overlay layering */}
+          {[...parsedPolygons]
+            .sort((a, b) => {
+              if (a.id === selectedPartId) return 1;
+              if (b.id === selectedPartId) return -1;
+              return 0;
+            })
+            .map((poly, idx) => {
+              const isHovered = hoveredPartId === poly.id;
+              const labelScale = Math.max(0.4, Math.min(2.5, 1 / zoom));
+              const showLabel = showLabels && poly.area > 2000 && (poly.width > 35 && poly.height > 35);
+              
+              // Manual Nest Adjustment styling
+              const part = localParts.find(p => p.id === poly.id);
+              
+              // If it's a manually placed part instance, skip it from parsed SVG render list to avoid duplication
+              if (part && part.source === 'manual') return null;
+
+              let transformStr = '';
+              let isSelected = false;
+
+              if (part) {
+                const dx = part.x - part.originalX;
+                const dy = part.y - part.originalY;
+                const dRot = part.rotation - part.originalRotation;
+                transformStr = `translate(${dx}, ${dy}) rotate(${dRot}, ${poly.centroidX}, ${poly.centroidY})`;
+                isSelected = selectedPartId === poly.id;
+              }
+
+              let partFill = 'rgba(13, 148, 136, 0.12)';
+              let partStroke = '#0d9488';
+              let strokeWidth = 1.5;
+              let filterEffect = undefined;
+
+              if (isSelected) {
+                partFill = 'rgba(236, 72, 153, 0.35)';
+                partStroke = '#ec4899';
+                strokeWidth = 2.5;
+                filterEffect = 'drop-shadow(0 0 8px rgba(236, 72, 153, 0.6))';
+              } else if (isHovered) {
+                partFill = isEditMode ? 'rgba(236, 72, 153, 0.15)' : 'rgba(13, 148, 136, 0.35)';
+                partStroke = isEditMode ? '#db2777' : '#38bdf8';
+              }
+
+              return (
+                <g key={poly.id || idx} transform={transformStr}>
+                  <path
+                    d={poly.dStr}
+                    fill={partFill}
+                    stroke={partStroke}
+                    strokeWidth={strokeWidth}
+                    fillRule="evenodd"
+                    style={{ 
+                      transition: 'fill 0.15s ease, stroke 0.15s ease', 
+                      cursor: isEditMode ? (draggingPartId === poly.id ? 'grabbing' : 'grab') : 'pointer',
+                      filter: filterEffect
+                    }}
+                    onMouseDown={(e) => handlePartMouseDown(e, poly.id)}
+                    onMouseEnter={() => setHoveredPartId(poly.id)}
+                    onMouseLeave={() => setHoveredPartId(null)}
+                  />
+                  
+                  {showLabel && (
+                    <text
+                      x={poly.centroidX}
+                      y={poly.centroidY}
+                      fill={isSelected ? '#ffffff' : (isHovered ? '#ffffff' : '#a9b1d6')}
+                      fontSize={Math.max(6, Math.min(16, 11 * labelScale))}
+                      fontWeight="700"
+                      fontFamily="Consolas, Monaco, monospace"
+                      textAnchor="middle"
+                      alignmentBaseline="middle"
+                      style={{ pointerEvents: 'none', transition: 'fill 0.15s ease' }}
+                    >
+                      {poly.label}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+
+          {/* Render Manually Added Parts (Source === 'manual') */}
+          {localParts
+            .filter(p => p.source === 'manual')
+            .map((part) => {
+              const isHovered = hoveredPartId === part.id;
+              const isSelected = selectedPartId === part.id;
+
+              // If manual part's geometry is not loaded yet, skip
+              if (!part.geometry || part.geometry.length === 0) return null;
+
+              const pathD = getPathData(part.geometry, part.holes);
+              const yOffset = (part.sheetId || 0) * (sheetHeight + 50);
+              const transformStr = `translate(${part.x + sheetX}, ${part.y + sheetY + yOffset}) rotate(${part.rotation})`;
+
+              let partFill = 'rgba(187, 154, 247, 0.15)'; // Magenta/Purple translucent
+              let partStroke = '#bb9af7';
+              let strokeWidth = 1.5;
+
+              if (isSelected) {
+                partFill = 'rgba(236, 72, 153, 0.35)';
+                partStroke = '#ec4899';
+                strokeWidth = 2.5;
+              } else if (isHovered) {
+                partFill = 'rgba(187, 154, 247, 0.35)';
+                partStroke = '#ff9e64';
+              }
+
+              return (
+                <g key={`manual-${part.id}`} transform={transformStr}>
+                  <path
+                    d={pathD}
+                    fill={partFill}
+                    stroke={partStroke}
+                    strokeWidth={strokeWidth}
+                    fillRule="evenodd"
+                    data-part-id={part.id}
+                    style={{
+                      transition: 'fill 0.15s ease, stroke 0.15s ease',
+                      cursor: isEditMode ? (draggingPartId === part.id ? 'grabbing' : 'grab') : 'pointer'
+                    }}
+                    onMouseDown={(e) => handlePartMouseDown(e, part.id)}
+                    onMouseEnter={() => setHoveredPartId(part.id)}
+                    onMouseLeave={() => setHoveredPartId(null)}
+                  />
+                </g>
+              );
+            })}
+        </g>
+      </svg>
+    );
+  };
 
   return (
     <Box>
@@ -2200,8 +2483,14 @@ export default function Result() {
                   <IconButton onClick={handleZoomOut} sx={{ color: '#a9b1d6', bgcolor: 'rgba(255,255,255,0.02)', '&:hover': { bgcolor: 'rgba(255,255,255,0.05)' } }} title="Zoom Out">
                     <ZoomOutIcon />
                   </IconButton>
+                  <IconButton onClick={handleFitToView} sx={{ color: '#a9b1d6', bgcolor: 'rgba(255,255,255,0.02)', '&:hover': { bgcolor: 'rgba(255,255,255,0.05)' } }} title="Fit to View">
+                    <FitIcon />
+                  </IconButton>
                   <IconButton onClick={handleResetZoom} sx={{ color: '#a9b1d6', bgcolor: 'rgba(255,255,255,0.02)', '&:hover': { bgcolor: 'rgba(255,255,255,0.05)' } }} title="Reset View">
                     <ResetIcon />
+                  </IconButton>
+                  <IconButton onClick={() => setIsFullscreenOpen(true)} sx={{ color: '#a9b1d6', bgcolor: 'rgba(255,255,255,0.02)', '&:hover': { bgcolor: 'rgba(255,255,255,0.05)' } }} title="Fullscreen Mode">
+                    <FullscreenIcon />
                   </IconButton>
                 </Box>
               </Box>
@@ -2228,194 +2517,7 @@ export default function Result() {
                   alignItems: 'center',
                 }}
               >
-                {svgContent ? (
-                  <svg
-                    width="100%"
-                    height="100%"
-                    style={{ display: 'block' }}
-                  >
-                    <defs>
-                      <pattern id="canvas-grid" width="40" height="40" patternUnits="userSpaceOnUse">
-                        <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(255, 255, 255, 0.03)" strokeWidth="1" />
-                      </pattern>
-                    </defs>
-                    
-                    <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
-                      {/* Sheet boundary background */}
-                      {sheetGeometry ? (
-                        <path
-                          d={getPathData(sheetGeometry.outer, sheetGeometry.holes || [], sheetX, sheetY)}
-                          fill="#12161f"
-                          stroke="#0d9488"
-                          strokeWidth="2"
-                          fillRule="evenodd"
-                        />
-                      ) : (
-                        <rect 
-                          x={sheetX} 
-                          y={sheetY} 
-                          width={sheetWidth} 
-                          height={sheetHeight} 
-                          fill="#12161f" 
-                          stroke="#4f5b66" 
-                          strokeWidth="1.5"
-                        />
-                      )}
-                      
-                      {/* Grid overlay */}
-                      {showGrid && (
-                        sheetGeometry ? (
-                          <path
-                            d={getPathData(sheetGeometry.outer, sheetGeometry.holes || [], sheetX, sheetY)}
-                            fill="url(#canvas-grid)"
-                            fillRule="evenodd"
-                          />
-                        ) : (
-                          <rect 
-                            x={sheetX} 
-                            y={sheetY} 
-                            width={sheetWidth} 
-                            height={sheetHeight} 
-                            fill="url(#canvas-grid)" 
-                          />
-                        )
-                      )}
-
-                      {/* Render Parsed Polygons sorted by selection for proper overlay layering */}
-                      {[...parsedPolygons]
-                        .sort((a, b) => {
-                          if (a.id === selectedPartId) return 1;
-                          if (b.id === selectedPartId) return -1;
-                          return 0;
-                        })
-                        .map((poly, idx) => {
-                          const isHovered = hoveredPartId === poly.id;
-                          const labelScale = Math.max(0.4, Math.min(2.5, 1 / zoom));
-                          const showLabel = showLabels && poly.area > 2000 && (poly.width > 35 && poly.height > 35);
-                          
-                          // Manual Nest Adjustment styling
-                          const part = localParts.find(p => p.id === poly.id);
-                          
-                          // If it's a manually placed part instance, skip it from parsed SVG render list to avoid duplication
-                          if (part && part.source === 'manual') return null;
-
-                          let transformStr = '';
-                          let isSelected = false;
-
-                          if (part) {
-                            const dx = part.x - part.originalX;
-                            const dy = part.y - part.originalY;
-                            const dRot = part.rotation - part.originalRotation;
-                            transformStr = `translate(${dx}, ${dy}) rotate(${dRot}, ${poly.centroidX}, ${poly.centroidY})`;
-                            isSelected = selectedPartId === poly.id;
-                          }
-
-                          let partFill = 'rgba(13, 148, 136, 0.12)';
-                          let partStroke = '#0d9488';
-                          let strokeWidth = 1.5;
-                          let filterEffect = undefined;
-
-                          if (isSelected) {
-                            partFill = 'rgba(236, 72, 153, 0.35)';
-                            partStroke = '#ec4899';
-                            strokeWidth = 2.5;
-                            filterEffect = 'drop-shadow(0 0 8px rgba(236, 72, 153, 0.6))';
-                          } else if (isHovered) {
-                            partFill = isEditMode ? 'rgba(236, 72, 153, 0.15)' : 'rgba(13, 148, 136, 0.35)';
-                            partStroke = isEditMode ? '#db2777' : '#38bdf8';
-                          }
-
-                          return (
-                            <g key={poly.id || idx} transform={transformStr}>
-                              <path
-                                d={poly.dStr}
-                                fill={partFill}
-                                stroke={partStroke}
-                                strokeWidth={strokeWidth}
-                                fillRule="evenodd"
-                                style={{ 
-                                  transition: 'fill 0.15s ease, stroke 0.15s ease', 
-                                  cursor: isEditMode ? (draggingPartId === poly.id ? 'grabbing' : 'grab') : 'pointer',
-                                  filter: filterEffect
-                                }}
-                                onMouseDown={(e) => handlePartMouseDown(e, poly.id)}
-                                onMouseEnter={() => setHoveredPartId(poly.id)}
-                                onMouseLeave={() => setHoveredPartId(null)}
-                              />
-                              
-                              {showLabel && (
-                                <text
-                                  x={poly.centroidX}
-                                  y={poly.centroidY}
-                                  fill={isSelected ? '#ffffff' : (isHovered ? '#ffffff' : '#a9b1d6')}
-                                  fontSize={Math.max(6, Math.min(16, 11 * labelScale))}
-                                  fontWeight="700"
-                                  fontFamily="Consolas, Monaco, monospace"
-                                  textAnchor="middle"
-                                  alignmentBaseline="middle"
-                                  style={{ pointerEvents: 'none', transition: 'fill 0.15s ease' }}
-                                >
-                                  {poly.label}
-                                </text>
-                              )}
-                            </g>
-                          );
-                        })}
-
-                      {/* Render Manually Added Parts (Source === 'manual') */}
-                      {localParts
-                        .filter(p => p.source === 'manual')
-                        .map((part) => {
-                          const isHovered = hoveredPartId === part.id;
-                          const isSelected = selectedPartId === part.id;
-
-                          // If manual part's geometry is not loaded yet, skip
-                          if (!part.geometry || part.geometry.length === 0) return null;
-
-                          const pathD = getPathData(part.geometry, part.holes);
-                          const transformStr = `translate(${part.x + sheetX}, ${part.y + sheetY}) rotate(${part.rotation})`;
-
-                          let partFill = 'rgba(187, 154, 247, 0.15)'; // Magenta/Purple translucent
-                          let partStroke = '#bb9af7';
-                          let strokeWidth = 1.5;
-
-                          if (isSelected) {
-                            partFill = 'rgba(236, 72, 153, 0.35)';
-                            partStroke = '#ec4899';
-                            strokeWidth = 2.5;
-                          } else if (isHovered) {
-                            partFill = 'rgba(187, 154, 247, 0.35)';
-                            partStroke = '#ff9e64';
-                          }
-
-                          return (
-                            <g key={`manual-${part.id}`} transform={transformStr}>
-                              <path
-                                d={pathD}
-                                fill={partFill}
-                                stroke={partStroke}
-                                strokeWidth={strokeWidth}
-                                fillRule="evenodd"
-                                data-part-id={part.id}
-                                style={{
-                                  transition: 'fill 0.15s ease, stroke 0.15s ease',
-                                  cursor: isEditMode ? (draggingPartId === part.id ? 'grabbing' : 'grab') : 'pointer'
-                                }}
-                                onMouseDown={(e) => handlePartMouseDown(e, part.id)}
-                                onMouseEnter={() => setHoveredPartId(part.id)}
-                                onMouseLeave={() => setHoveredPartId(null)}
-                              />
-                            </g>
-                          );
-                        })}
-                    </g>
-                  </svg>
-                ) : (
-                  <Box sx={{ p: 4, color: '#565f89', display: 'flex', alignItems: 'center' }}>
-                    <CircularProgress size={30} sx={{ mr: 2 }} />
-                    Loading visual preview...
-                  </Box>
-                )}
+                {renderLayoutSvg()}
               </Box>
 
               {/* Workflow controls for layout source switching */}
@@ -2720,6 +2822,134 @@ export default function Result() {
           </Grid>
         </Grid>
       )}
+
+      {/* Fullscreen Layout Viewer Dialog */}
+      <Dialog
+        open={isFullscreenOpen}
+        onClose={() => setIsFullscreenOpen(false)}
+        fullScreen
+        PaperProps={{
+          sx: {
+            bgcolor: '#0f1319',
+            border: 'none',
+            borderRadius: 0,
+            height: '100vh',
+            width: '100vw',
+            margin: 0
+          }
+        }}
+      >
+        <DialogTitle
+          sx={{
+            color: '#ffffff',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            p: 3,
+            borderBottom: '1px solid rgba(255, 255, 255, 0.06)'
+          }}
+        >
+          <Typography variant="h6" sx={{ fontWeight: 800 }}>
+            Fullscreen Sheet Placement Preview
+          </Typography>
+          <IconButton
+            onClick={() => setIsFullscreenOpen(false)}
+            sx={{
+              color: '#a9b1d6',
+              '&:hover': { color: '#ffffff', bgcolor: 'rgba(255, 255, 255, 0.05)' }
+            }}
+          >
+            <FullscreenExitIcon />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent
+          sx={{
+            p: 3,
+            display: 'flex',
+            flexDirection: 'column',
+            height: '100%',
+            overflow: 'hidden',
+            bgcolor: '#0f1319'
+          }}
+        >
+          {/* Fullscreen Toolbar Controls */}
+          <Box
+            sx={{
+              display: 'flex',
+              gap: 2,
+              mb: 2,
+              flexWrap: 'wrap',
+              width: '100%',
+              alignItems: 'center',
+              justifyContent: 'space-between'
+            }}
+          >
+            <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={showLabels}
+                    onChange={(e) => setShowLabels(e.target.checked)}
+                    color="primary"
+                  />
+                }
+                label="Show Labels"
+                sx={{ color: '#a9b1d6', '& .MuiFormControlLabel-label': { fontSize: '0.85rem', fontWeight: 600 } }}
+              />
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={showGrid}
+                    onChange={(e) => setShowGrid(e.target.checked)}
+                    color="primary"
+                  />
+                }
+                label="Show Grid"
+                sx={{ color: '#a9b1d6', '& .MuiFormControlLabel-label': { fontSize: '0.85rem', fontWeight: 600 } }}
+              />
+            </Box>
+            <Box sx={{ display: 'flex', gap: 0.5 }}>
+              <IconButton onClick={handleZoomIn} sx={{ color: '#a9b1d6', bgcolor: 'rgba(255,255,255,0.02)', '&:hover': { bgcolor: 'rgba(255,255,255,0.05)' } }} title="Zoom In">
+                <ZoomInIcon />
+              </IconButton>
+              <IconButton onClick={handleZoomOut} sx={{ color: '#a9b1d6', bgcolor: 'rgba(255,255,255,0.02)', '&:hover': { bgcolor: 'rgba(255,255,255,0.05)' } }} title="Zoom Out">
+                <ZoomOutIcon />
+              </IconButton>
+              <IconButton onClick={handleFitToView} sx={{ color: '#a9b1d6', bgcolor: 'rgba(255,255,255,0.02)', '&:hover': { bgcolor: 'rgba(255,255,255,0.05)' } }} title="Fit to View">
+                <FitIcon />
+              </IconButton>
+              <IconButton onClick={handleResetZoom} sx={{ color: '#a9b1d6', bgcolor: 'rgba(255,255,255,0.02)', '&:hover': { bgcolor: 'rgba(255,255,255,0.05)' } }} title="Reset View">
+                <ResetIcon />
+              </IconButton>
+            </Box>
+          </Box>
+
+          {/* Fullscreen Canvas Viewport */}
+          <Box
+            ref={fullscreenCanvasRef}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={handleMouseUp}
+            sx={{
+              flexGrow: 1,
+              width: '100%',
+              bgcolor: '#090b0e',
+              borderRadius: '8px',
+              overflow: 'hidden',
+              position: 'relative',
+              cursor: isDragging ? 'grabbing' : 'grab',
+              border: '1px solid rgba(255, 255, 255, 0.04)',
+              userSelect: 'none',
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+            }}
+          >
+            {renderLayoutSvg()}
+          </Box>
+        </DialogContent>
+      </Dialog>
     </Box>
   );
 }
