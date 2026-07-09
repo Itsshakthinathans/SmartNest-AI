@@ -1,6 +1,7 @@
 const { pool } = require('../config/database');
 const nestingService = require('../services/nestingService');
 const costingService = require('../services/costingService');
+const inventoryService = require('../services/inventoryService');
 
 const generateRemnantSvg = (region, remnantId) => {
   let minX = Infinity, minY = Infinity;
@@ -290,6 +291,63 @@ const calculateRemnantDimensions = (sheetWidth, sheetHeight, maxX, maxY) => {
   }
 };
 
+const handleInventoryDeduction = async (jobId, projectId, sheetWidth, sheetHeight, remnantId) => {
+  try {
+    // 1. Fetch job operator details
+    const jobRes = await pool.query('SELECT operator_name, operator_email FROM nest_jobs WHERE id = $1', [jobId]);
+    if (jobRes.rows.length === 0) return;
+    const { operator_name: operatorName, operator_email: operatorEmail } = jobRes.rows[0];
+
+    // Deductions only happen if operatorName & operatorEmail are populated (prompted on start)
+    if (!operatorName || !operatorEmail) {
+      console.log(`[NestingController] No operator details for job ID ${jobId}. Skipping inventory deduction.`);
+      return;
+    }
+
+    // 2. Fetch project details
+    const projRes = await pool.query('SELECT project_name, material_type, material_thickness FROM projects WHERE id = $1', [projectId]);
+    if (projRes.rows.length === 0) return;
+    const project = projRes.rows[0];
+    const projectName = project.project_name;
+    const materialType = project.material_type || 'Mild Steel';
+    const thickness = parseFloat(project.material_thickness) || 1.00;
+
+    // 3. Process remnant usage
+    if (remnantId) {
+      await inventoryService.recordRemnantUsage(remnantId, projectName, materialType, thickness, operatorName, operatorEmail);
+    } else {
+      // 4. Read output json to calculate standard sheets consumed
+      const path = require('path');
+      const fs = require('fs');
+      const resultsDir = path.join(__dirname, '../uploads/projects', String(projectId), 'results');
+      const jsonPath = path.join(resultsDir, 'nested_output.json');
+      if (fs.existsSync(jsonPath)) {
+        const layoutData = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+        const placements = [];
+        if (layoutData.placements && Array.isArray(layoutData.placements)) {
+          layoutData.placements.forEach((sheetPlacement, sheetIdx) => {
+            const sheetPlacements = sheetPlacement.sheetplacements || [];
+            sheetPlacements.forEach(p => {
+              placements.push({
+                ...p,
+                sheetId: p.sheetId !== undefined ? p.sheetId : (sheetPlacement.sheetid !== undefined ? sheetPlacement.sheetid : sheetIdx)
+              });
+            });
+          });
+        }
+        const sheetsCount = placements.length > 0 ? Math.max(1, ...placements.map(p => (p.sheetId || 0) + 1)) : 0;
+        
+        // Process standard sheet stock deduction
+        await inventoryService.deductSheetsConsumed(projectName, sheetWidth, sheetHeight, materialType, thickness, sheetsCount, operatorName, operatorEmail);
+      } else {
+        console.warn(`[NestingController] nested_output.json not found for job ${jobId}. Cannot calculate standard sheets consumed.`);
+      }
+    }
+  } catch (err) {
+    console.error('[NestingController] Failed to run handleInventoryDeduction:', err.message);
+  }
+};
+
 // Helper to run nesting in the background
 const runNestingInBackground = async (jobId, files, projectId, optimizationLevel, sheetWidth, sheetHeight, remnantId, isRegenerate = false, nestingMode = 'multi') => {
   try {
@@ -457,6 +515,7 @@ const runNestingInBackground = async (jobId, files, projectId, optimizationLevel
       if (remnantId) {
         await pool.query("UPDATE remnants SET status = 'Consumed', used = true WHERE id = $1", [remnantId]);
       }
+      await handleInventoryDeduction(jobId, projectId, sheetWidth, sheetHeight, remnantId);
       console.log(`[NestingController] Job ID ${jobId} (Multi-Strategy) completed successfully.`);
 
     } else {
@@ -557,6 +616,7 @@ const runNestingInBackground = async (jobId, files, projectId, optimizationLevel
       if (remnantId) {
         await pool.query("UPDATE remnants SET status = 'Consumed', used = true WHERE id = $1", [remnantId]);
       }
+      await handleInventoryDeduction(jobId, projectId, sheetWidth, sheetHeight, remnantId);
       activeJobsProgress.delete(parseInt(jobId, 10));
       console.log(`[NestingController] Job ID ${jobId} completed and remnant stored successfully.`);
     }
@@ -618,12 +678,27 @@ const startNestingJob = async (req, res) => {
     }
 
     // Create nest_jobs record with status = 'pending'
+    const operatorName = req.body?.operatorName || null;
+    const operatorEmail = req.body?.operatorEmail || null;
+
     const insertQuery = `
-      INSERT INTO nest_jobs (project_id, status, input_file_count, total_parts, sheet_width, sheet_height, remnant_id, optimization_level, nesting_mode)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      INSERT INTO nest_jobs (project_id, status, input_file_count, total_parts, sheet_width, sheet_height, remnant_id, optimization_level, nesting_mode, operator_name, operator_email)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
       RETURNING id, status
     `;
-    const insertResult = await pool.query(insertQuery, [projectId, 'pending', fileCount, totalParts, sheetWidth, sheetHeight, remnantId, optimizationLevel, nestingMode]);
+    const insertResult = await pool.query(insertQuery, [
+      projectId, 
+      'pending', 
+      fileCount, 
+      totalParts, 
+      sheetWidth, 
+      sheetHeight, 
+      remnantId, 
+      optimizationLevel, 
+      nestingMode,
+      operatorName,
+      operatorEmail
+    ]);
     const jobId = insertResult.rows[0].id;
 
     // Update status = 'processing'

@@ -23,6 +23,7 @@ import {
   Circle as CircleIcon,
   Settings as SettingsIcon,
   Inventory as RemnantsIcon,
+  Layers as SheetsIcon,
 } from '@mui/icons-material';
 
 const drawerWidth = 260;
@@ -40,7 +41,9 @@ export default function DashboardLayout() {
     { text: 'Dashboard', icon: <DashboardIcon />, path: '/' },
     { text: 'Projects', icon: <ProjectsIcon />, path: '/projects' },
     { text: 'Remnants', icon: <RemnantsIcon />, path: '/remnants' },
+    { text: 'Sheets', icon: <SheetsIcon />, path: '/sheets' },
   ];
+
 
   const drawerContent = (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', bgcolor: '#0f1319', color: '#a9b1d6' }}>
@@ -145,7 +148,7 @@ export default function DashboardLayout() {
           </IconButton>
           
           <Typography variant="h6" noWrap component="div" sx={{ color: '#ffffff', fontWeight: 700 }}>
-            {location.pathname === '/' ? 'Dashboard' : location.pathname.startsWith('/projects') ? 'Project Management' : location.pathname.startsWith('/remnants') ? 'Remnants Inventory' : 'Nesting Results'}
+            {location.pathname === '/' ? 'Dashboard' : location.pathname.startsWith('/projects') ? 'Project Management' : location.pathname.startsWith('/remnants') ? 'Remnants Inventory' : location.pathname.startsWith('/sheets') ? 'Sheets Stock & History' : 'Nesting Results'}
           </Typography>
 
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>

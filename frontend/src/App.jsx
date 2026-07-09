@@ -12,6 +12,7 @@ import NestingProcessingDashboard from './pages/NestingProcessingDashboard';
 import Result from './pages/Result';
 import Remnants from './pages/Remnants';
 import RemnantDetail from './pages/RemnantDetail';
+import Sheets from './pages/Sheets';
 
 // Premium industrial dark theme palette configuration
 const theme = createTheme({
@@ -118,6 +119,7 @@ function App() {
             <Route path="results/:jobId" element={<Result />} />
             <Route path="remnants" element={<Remnants />} />
             <Route path="remnants/:id" element={<RemnantDetail />} />
+            <Route path="sheets" element={<Sheets />} />
           </Route>
         </Routes>
       </Router>

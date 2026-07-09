@@ -8,6 +8,7 @@ const remnantRoutes = require('./routes/remnantRoutes');
 const aiRoutes = require('./routes/aiRoutes');
 const exportRoutes = require('./routes/exportRoutes');
 const copilotRoutes = require('./routes/copilotRoutes');
+const sheetRoutes = require('./routes/sheetRoutes');
 
 const app = express();
 
@@ -40,5 +41,6 @@ app.use('/api/remnants', remnantRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/export', exportRoutes);
 app.use('/api/copilot', copilotRoutes);
+app.use('/api/sheets', sheetRoutes);
 
 module.exports = app;

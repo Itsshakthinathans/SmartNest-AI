@@ -16,7 +16,24 @@ import {
   IconButton,
   Tooltip,
   Switch,
-  FormControlLabel
+  FormControlLabel,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  TextField,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  List,
+  ListItem,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow
 } from '@mui/material';
 import {
   ArrowBack as BackIcon,
@@ -25,7 +42,9 @@ import {
   Add as AddIcon,
   ZoomIn as ZoomInIcon,
   ZoomOut as ZoomOutIcon,
-  RestartAlt as ResetIcon
+  RestartAlt as ResetIcon,
+  Layers as SheetsIcon,
+  Inventory as RemnantsIcon
 } from '@mui/icons-material';
 import api from '../services/api';
 import LayoutCanvas from '../components/LayoutCanvas';
@@ -312,6 +331,129 @@ export default function ReviewNestJob() {
     selectedRemnant: null
   });
 
+  const [inventorySheets, setInventorySheets] = useState([]);
+  const [recommendations, setRecommendations] = useState([]);
+  const [recLoading, setRecLoading] = useState(false);
+
+  // Prompt Dialog State
+  const [promptOpen, setPromptOpen] = useState(false);
+  const [operatorName, setOperatorName] = useState('');
+  const [operatorEmail, setOperatorEmail] = useState('');
+
+  const getStockQuantity = (width, height) => {
+    if (!project) return 0;
+    const matType = project.material_type || 'Mild Steel';
+    const thickness = parseFloat(project.material_thickness) || 1.00;
+    const match = (inventorySheets || []).find(s => 
+      s.width === width && 
+      s.height === height && 
+      s.material_type && matType &&
+      s.material_type.toLowerCase() === matType.toLowerCase() && 
+      Math.abs(parseFloat(s.material_thickness || 0) - thickness) < 0.01
+    );
+    return match ? match.quantity : 0;
+  };
+
+  const getUtilAndSheets = (width, height) => {
+    const sheetArea = width * height;
+    const req = sheetArea > 0 ? Math.ceil(totalPartArea / (sheetArea * EXPECTED_UTILIZATION)) : 0;
+    const util = (req > 0 && sheetArea > 0) ? Math.min(100, (totalPartArea / (sheetArea * req)) * 100) : 0;
+    return { req, util };
+  };
+
+  const getRecommendedPreset = () => {
+    if (!project) return '1000x1000';
+    const presets = [
+      { name: '1000x1000', w: 1000, h: 1000 },
+      { name: '2000x1000', w: 2000, h: 1000 },
+      { name: '3000x1500', w: 3000, h: 1500 }
+    ];
+    let bestPreset = null;
+    let maxUtil = -1;
+
+    presets.forEach(p => {
+      const available = getStockQuantity(p.w, p.h);
+      const { req, util } = getUtilAndSheets(p.w, p.h);
+      if (available >= req && req > 0) {
+        if (util > maxUtil) {
+          maxUtil = util;
+          bestPreset = p.name;
+        }
+      }
+    });
+
+    if (!bestPreset) {
+      let maxStock = -1;
+      presets.forEach(p => {
+        const available = getStockQuantity(p.w, p.h);
+        if (available > maxStock) {
+          maxStock = available;
+          bestPreset = p.name;
+        }
+      });
+    }
+
+    return bestPreset || '1000x1000';
+  };
+
+  const checkInventoryStatus = () => {
+    if (config.selectedRemnant) {
+      return { status: 'sufficient', available: 1, required: 1, message: '✓ Inventory Available' };
+    }
+    const preset = config.sheetSizePreset || '1000x1000';
+    if (preset === 'custom') {
+      return { status: 'sufficient', available: null, required: null, message: '' };
+    }
+    const [w, h] = preset.split('x').map(Number);
+    const available = getStockQuantity(w, h);
+    const { req } = getUtilAndSheets(w, h);
+    
+    if (available >= req) {
+      return { status: 'sufficient', available, required: req, message: '✓ Inventory Available' };
+    } else if (available === 0) {
+      return { status: 'zero', available, required: req, message: '❌ Insufficient Inventory' };
+    } else {
+      return { status: 'insufficient', available, required: req, message: '❌ Insufficient Inventory' };
+    }
+  };
+
+  const handleConfigChange = (key, value) => {
+    setConfig(prev => {
+      const updated = { ...prev, [key]: value };
+      if (key === 'sheetSizePreset' && value !== 'custom') {
+        updated.selectedRemnant = null;
+      }
+      sessionStorage.setItem(`project_config_${id}`, JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  const handleSelectRemnant = (rem) => {
+    setConfig(prev => {
+      const updated = { 
+        ...prev, 
+        selectedRemnant: rem, 
+        sheetSizePreset: 'custom', 
+        customWidth: rem.remaining_width, 
+        customHeight: rem.remaining_height 
+      };
+      sessionStorage.setItem(`project_config_${id}`, JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  const handleDeselectRemnant = () => {
+    setConfig(prev => {
+      const updated = { 
+        ...prev, 
+        selectedRemnant: null, 
+        sheetSizePreset: '1000x1000' 
+      };
+      sessionStorage.setItem(`project_config_${id}`, JSON.stringify(updated));
+      return updated;
+    });
+  };
+
   const [suitability, setSuitability] = useState(null);
   const [suitabilityLoading, setSuitabilityLoading] = useState(false);
 
@@ -386,6 +528,25 @@ export default function ReviewNestJob() {
         }
       }
 
+      // Load sheets stock inventory
+      try {
+        const sheetsData = await api.getSheets();
+        setInventorySheets(sheetsData);
+      } catch (stockErr) {
+        console.warn('[ReviewNestJob] Failed to load inventory sheets stock:', stockErr.message);
+      }
+
+      // Fetch recommended remnants for project
+      try {
+        setRecLoading(true);
+        const recsRes = await api.recommendRemnants(id);
+        setRecommendations(recsRes.recommendations || []);
+      } catch (recErr) {
+        console.warn('[ReviewNestJob] Failed to load remnant recommendations:', recErr.message);
+      } finally {
+        setRecLoading(false);
+      }
+
       // Load session configuration
       const savedConfig = sessionStorage.getItem(`project_config_${id}`);
       let currentWidth = 1000;
@@ -394,6 +555,16 @@ export default function ReviewNestJob() {
       if (savedConfig) {
         parsed = JSON.parse(savedConfig);
       }
+
+      // Merge with default values
+      parsed = {
+        optimizationLevel: 'greedy',
+        sheetSizePreset: '1000x1000',
+        customWidth: 1000,
+        customHeight: 1000,
+        selectedRemnant: null,
+        ...parsed
+      };
 
       if (loadedRemnant) {
         parsed.selectedRemnant = loadedRemnant;
@@ -502,17 +673,39 @@ export default function ReviewNestJob() {
     }
   };
 
-  const handleGenerateNest = async () => {
+  const handleGenerateNest = () => {
     if (files.length === 0) return;
+    
+    // Check inventory availability first to be absolutely sure they can't bypass stock validation
+    const stockStatus = checkInventoryStatus();
+    if (stockStatus.status === 'zero' || stockStatus.status === 'insufficient') {
+      alert('Cannot start nesting: Insufficient stock inventory. Please select another sheet or add more inventory.');
+      return;
+    }
+
+    setOperatorName('');
+    setOperatorEmail('');
+    setPromptOpen(true);
+  };
+
+  const handleConfirmNesting = async () => {
+    if (!operatorName.trim() || !operatorEmail.trim()) {
+      alert('Operator Name and Email ID are strictly required to log nesting operations.');
+      return;
+    }
 
     try {
       setGenerating(true);
+      setPromptOpen(false);
       const response = await api.startNestingJob(
         id,
         config.optimizationLevel,
         sheetWidth,
         sheetHeight,
-        config.selectedRemnant?.id
+        config.selectedRemnant?.id,
+        'multi',
+        operatorName.trim(),
+        operatorEmail.trim()
       );
       // Clean up sessionStorage config upon successful start
       sessionStorage.removeItem(`project_config_${id}`);
@@ -699,96 +892,286 @@ export default function ReviewNestJob() {
 
         <Grid item xs={12} md={5}>
           <Stack spacing={3}>
-            {/* 1. Sheet Setup and Layout Strategy */}
+            {/* 1. Recommended Remnants Card */}
             <Paper sx={{ p: 3, bgcolor: '#0f1319', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '12px' }}>
-               <Typography variant="h6" sx={{ color: '#ffffff', fontWeight: 700, mb: 2 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                <RemnantsIcon sx={{ color: '#0d9488' }} />
+                <Typography variant="h6" sx={{ color: '#ffffff', fontWeight: 700 }}>
+                  Recommended Remnants
+                </Typography>
+              </Box>
+              <Typography variant="caption" sx={{ color: '#565f89', display: 'block', mb: 2 }}>
+                Compatible leftover material in stock with sufficient footprint area
+              </Typography>
+              <Divider sx={{ borderColor: 'rgba(255,255,255,0.06)', mb: 2 }} />
+
+              {recLoading ? (
+                <Box sx={{ display: 'flex', justifyContent: 'center', py: 3 }}>
+                  <CircularProgress size={24} color="primary" />
+                </Box>
+              ) : recommendations.length === 0 ? (
+                <Box sx={{ py: 2, textAlign: 'center' }}>
+                  <Alert severity="info" sx={{ bgcolor: 'rgba(13, 148, 136, 0.04)', color: '#0d9488', borderColor: 'rgba(13, 148, 136, 0.2)', fontSize: '0.8rem' }}>
+                    No compatible remnants found. We recommend using standard sheets.
+                  </Alert>
+                </Box>
+              ) : (
+                <List sx={{ width: '100%', p: 0 }}>
+                  {recommendations.slice(0, 1).map((rec) => {
+                    const isSelected = config.selectedRemnant?.id === rec.id;
+                    return (
+                      <ListItem
+                        key={rec.id}
+                        sx={{
+                          border: isSelected ? '1.5px solid #0d9488' : '1px solid rgba(255, 255, 255, 0.08)',
+                          borderRadius: '8px',
+                          bgcolor: isSelected ? 'rgba(13, 148, 136, 0.04)' : 'rgba(255, 255, 255, 0.01)',
+                          p: 2,
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'stretch',
+                          gap: 1
+                        }}
+                      >
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <Typography variant="subtitle2" sx={{ color: '#06b6d4', fontWeight: 800 }}>
+                            RM-{String(rec.id).padStart(4, '0')}
+                          </Typography>
+                          <Typography variant="caption" sx={{ color: rec.is_scrap ? '#e0af68' : '#0d9488', fontWeight: 800, textTransform: 'uppercase' }}>
+                            {rec.is_scrap ? 'Scrap Offcut' : 'Rectangular Remnant'}
+                          </Typography>
+                        </Box>
+                        
+                        <Stack spacing={0.5}>
+                          <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                            <Typography variant="caption" sx={{ color: '#a9b1d6' }}>Bounding Box:</Typography>
+                            <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 700 }}>
+                              {rec.remaining_width} × {rec.remaining_height} mm
+                            </Typography>
+                          </Box>
+                          <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                            <Typography variant="caption" sx={{ color: '#a9b1d6' }}>Stock Area:</Typography>
+                            <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 700 }}>
+                              {formatArea(rec.remaining_area)}
+                            </Typography>
+                          </Box>
+                          <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                            <Typography variant="caption" sx={{ color: '#a9b1d6' }}>Material Details:</Typography>
+                            <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 700 }}>
+                              {rec.material_type} ({parseFloat(rec.material_thickness).toFixed(2)} mm)
+                            </Typography>
+                          </Box>
+                        </Stack>
+
+                        <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 1 }}>
+                          <Button
+                            variant={isSelected ? 'contained' : 'outlined'}
+                            size="small"
+                            onClick={() => isSelected ? handleDeselectRemnant() : handleSelectRemnant(rec)}
+                            sx={{
+                              borderColor: '#0d9488',
+                              color: isSelected ? '#ffffff' : '#0d9488',
+                              bgcolor: isSelected ? '#0d9488' : 'transparent',
+                              textTransform: 'none',
+                              fontSize: '0.75rem',
+                              fontWeight: 700,
+                              py: 0.5,
+                              '&:hover': {
+                                borderColor: '#06b6d4',
+                                bgcolor: isSelected ? '#0f766e' : 'rgba(13, 148, 136, 0.08)',
+                              }
+                            }}
+                          >
+                            {isSelected ? 'Deselect' : 'Use Remnant'}
+                          </Button>
+                        </Box>
+                      </ListItem>
+                    );
+                  })}
+                </List>
+              )}
+            </Paper>
+
+            {/* 2. Sheet Setup and Layout Strategy */}
+            <Paper sx={{ p: 3, bgcolor: '#0f1319', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '12px' }}>
+              <Typography variant="h6" sx={{ color: '#ffffff', fontWeight: 700, mb: 2 }}>
                 Sheet Stock & Strategy
               </Typography>
               <Divider sx={{ borderColor: 'rgba(255,255,255,0.06)', mb: 2 }} />
 
-              {config.selectedRemnant ? (
-                <Stack spacing={1.5} sx={{ mb: 2 }}>
-                  <Box sx={{ py: 1, px: 1.5, bgcolor: 'rgba(13, 148, 136, 0.04)', border: '1px solid rgba(13, 148, 136, 0.2)', borderRadius: '8px' }}>
-                    <Typography variant="caption" sx={{ color: '#0d9488', fontWeight: 800, textTransform: 'uppercase', display: 'block', mb: 1 }}>
-                      ✓ Stock Source
-                    </Typography>
-                    <Stack spacing={1}>
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 700 }}>Source Asset:</Typography>
-                        <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 800 }}>
-                          {config.selectedRemnant.is_scrap 
-                            ? `Scrap SP-${String(config.selectedRemnant.id).padStart(4, '0')}` 
-                            : `Remnant RM-${String(config.selectedRemnant.id).padStart(4, '0')}`
-                          }
-                        </Typography>
-                      </Box>
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 700 }}>Geometry:</Typography>
-                        <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 800 }}>
-                          {config.selectedRemnant.is_scrap ? 'Irregular Scrap' : 'Rectangular Remnant'}
-                        </Typography>
-                      </Box>
-                      {!config.selectedRemnant.is_scrap && (
-                        <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                          <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 700 }}>Width × Height:</Typography>
-                          <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 800 }}>
-                            {config.selectedRemnant.remaining_width} × {config.selectedRemnant.remaining_height} mm
-                          </Typography>
-                        </Box>
-                      )}
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 700 }}>Stock Area:</Typography>
-                        <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 800 }}>
-                          {formatArea(config.selectedRemnant.remaining_area)}
-                        </Typography>
-                      </Box>
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 700 }}>Material:</Typography>
-                        <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 800 }}>
-                          {config.selectedRemnant.material_type}
-                        </Typography>
-                      </Box>
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 700 }}>Thickness:</Typography>
-                        <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 800 }}>
-                          {config.selectedRemnant.material_thickness} mm
-                        </Typography>
-                      </Box>
-                    </Stack>
-                  </Box>
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Layout Strategy:</Typography>
-                    <Chip
-                      size="small"
-                      label={selectedStrategyLabel}
-                      sx={{ bgcolor: 'rgba(6, 182, 212, 0.1)', color: '#06b6d4', fontWeight: 700, fontSize: '0.75rem' }}
-                    />
-                  </Box>
-                </Stack>
-              ) : (
-                <Stack spacing={1.5}>
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Material:</Typography>
-                    <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      {project?.material_type || 'Mild Steel'}
-                    </Typography>
-                  </Box>
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Thickness:</Typography>
-                    <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
-                      {project?.material_thickness || '1.0'} mm
-                    </Typography>
-                  </Box>
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Layout Strategy:</Typography>
-                    <Chip
-                      size="small"
-                      label={selectedStrategyLabel}
-                      sx={{ bgcolor: 'rgba(6, 182, 212, 0.1)', color: '#06b6d4', fontWeight: 700, fontSize: '0.75rem' }}
-                    />
-                  </Box>
-                </Stack>
+              {/* Material read-only meta */}
+              <Stack spacing={1.5} sx={{ mb: 3 }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Material Type:</Typography>
+                  <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
+                    {project?.material_type || 'Mild Steel'}
+                  </Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <Typography variant="body2" sx={{ color: '#a9b1d6' }}>Material Thickness:</Typography>
+                  <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>
+                    {project?.material_thickness || '1.0'} mm
+                  </Typography>
+                </Box>
+              </Stack>
+
+              {/* Preset sheet size selector comparison table */}
+              {!config.selectedRemnant && (
+                <Box sx={{ mb: 3 }}>
+                  <Typography variant="caption" sx={{ color: '#565f89', display: 'block', mb: 1, fontWeight: 700, textTransform: 'uppercase' }}>
+                    Sheet Recommendation Summary
+                  </Typography>
+                  <TableContainer component={Paper} sx={{ bgcolor: 'rgba(255,255,255,0.01)', border: '1px solid rgba(255,255,255,0.04)', borderRadius: '8px', overflow: 'hidden' }}>
+                    <Table size="small">
+                      <TableHead sx={{ bgcolor: 'rgba(255, 255, 255, 0.01)' }}>
+                        <TableRow>
+                          <TableCell sx={{ color: '#ffffff', fontSize: '0.75rem', fontWeight: 700, py: 1 }}>Sheet Size</TableCell>
+                          <TableCell sx={{ color: '#ffffff', fontSize: '0.75rem', fontWeight: 700, py: 1 }}>Stock Qty</TableCell>
+                          <TableCell sx={{ color: '#ffffff', fontSize: '0.75rem', fontWeight: 700, py: 1 }}>Est. Util</TableCell>
+                          <TableCell sx={{ color: '#ffffff', fontSize: '0.75rem', fontWeight: 700, py: 1 }}>Sheets Req.</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {[
+                          { w: 1000, h: 1000, label: '1000x1000' },
+                          { w: 2000, h: 1000, label: '2000x1000' },
+                          { w: 3000, h: 1500, label: '3000x1500' }
+                        ].map((preset) => {
+                          const qty = getStockQuantity(preset.w, preset.h);
+                          const { req, util } = getUtilAndSheets(preset.w, preset.h);
+                          const isRec = getRecommendedPreset() === preset.label;
+                          return (
+                            <TableRow key={preset.label} sx={{ bgcolor: isRec ? 'rgba(13, 148, 136, 0.05)' : 'transparent' }}>
+                              <TableCell sx={{ color: isRec ? '#0d9488' : '#a9b1d6', fontSize: '0.75rem', fontWeight: isRec ? 800 : 600, py: 1 }}>
+                                {isRec ? `⭐ ${preset.w}×${preset.h}` : `${preset.w}×${preset.h}`}
+                              </TableCell>
+                              <TableCell sx={{ color: qty === 0 ? '#f7768e' : '#10b981', fontSize: '0.75rem', fontWeight: 700, py: 1 }}>
+                                {qty}
+                              </TableCell>
+                              <TableCell sx={{ color: '#ffffff', fontSize: '0.75rem', py: 1 }}>{util.toFixed(1)}%</TableCell>
+                              <TableCell sx={{ color: '#ffffff', fontSize: '0.75rem', py: 1, fontWeight: 700 }}>{req}</TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </Box>
               )}
+
+              {/* Interactive Size Preset dropdown */}
+              <Stack spacing={2} sx={{ mb: 3 }}>
+                {config.selectedRemnant ? (
+                  <Alert severity="success" sx={{ bgcolor: 'rgba(16, 185, 129, 0.03)', color: '#10b981', borderColor: 'rgba(16, 185, 129, 0.2)', fontSize: '0.85rem' }}>
+                    Using Remnant <strong>RM-{String(config.selectedRemnant.id).padStart(4, '0')}</strong>. Presets are bypassed.
+                  </Alert>
+                ) : (
+                  <>
+                    <FormControl size="small" fullWidth>
+                      <InputLabel id="sheet-size-label" sx={{ color: '#a9b1d6' }}>Sheet Size Preset</InputLabel>
+                      <Select
+                        labelId="sheet-size-label"
+                        value={config.sheetSizePreset}
+                        label="Sheet Size Preset"
+                        onChange={(e) => handleConfigChange('sheetSizePreset', e.target.value)}
+                        sx={{
+                          color: '#ffffff',
+                          '.MuiOutlinedInput-notchedOutline': { borderColor: 'rgba(255,255,255,0.1)' }
+                        }}
+                      >
+                        <MenuItem value="1000x1000" disabled={getStockQuantity(1000, 1000) === 0}>
+                          1000 × 1000 mm (Stock: {getStockQuantity(1000, 1000)})
+                        </MenuItem>
+                        <MenuItem value="2000x1000" disabled={getStockQuantity(2000, 1000) === 0}>
+                          2000 × 1000 mm (Stock: {getStockQuantity(2000, 1000)})
+                        </MenuItem>
+                        <MenuItem value="3000x1500" disabled={getStockQuantity(3000, 1500) === 0}>
+                          3000 × 1500 mm (Stock: {getStockQuantity(3000, 1500)})
+                        </MenuItem>
+                        <MenuItem value="custom">Custom Dimensions...</MenuItem>
+                      </Select>
+                    </FormControl>
+
+                    {/* Custom Width & Height fields */}
+                    {config.sheetSizePreset === 'custom' && (
+                      <Box sx={{ display: 'flex', gap: 2 }}>
+                        <TextField
+                          label="Width (mm)"
+                          type="number"
+                          size="small"
+                          value={config.customWidth}
+                          onChange={(e) => handleConfigChange('customWidth', parseInt(e.target.value, 10) || '')}
+                          fullWidth
+                          sx={{ '& .MuiOutlinedInput-root fieldset': { borderColor: 'rgba(255,255,255,0.1)' } }}
+                        />
+                        <TextField
+                          label="Height (mm)"
+                          type="number"
+                          size="small"
+                          value={config.customHeight}
+                          onChange={(e) => handleConfigChange('customHeight', parseInt(e.target.value, 10) || '')}
+                          fullWidth
+                          sx={{ '& .MuiOutlinedInput-root fieldset': { borderColor: 'rgba(255,255,255,0.1)' } }}
+                        />
+                      </Box>
+                    )}
+
+                    {/* Inventory availability validation banner */}
+                    {config.sheetSizePreset !== 'custom' && (() => {
+                      const status = checkInventoryStatus();
+                      const isSufficient = status.status === 'sufficient';
+                      return (
+                        <Box sx={{ mt: 1 }}>
+                          <Alert 
+                            severity={isSufficient ? 'success' : 'error'} 
+                            variant="filled"
+                            sx={{ 
+                              bgcolor: isSufficient ? 'rgba(16, 185, 129, 0.15)' : 'rgba(247, 118, 142, 0.15)', 
+                              color: isSufficient ? '#10b981' : '#f7768e',
+                              border: `1px solid ${isSufficient ? 'rgba(16, 185, 129, 0.3)' : 'rgba(247, 118, 142, 0.3)'}`,
+                              fontWeight: 700
+                            }}
+                          >
+                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                              <Typography variant="body2" sx={{ fontWeight: 800 }}>
+                                {status.message}
+                              </Typography>
+                              <Typography variant="caption" sx={{ opacity: 0.85 }}>
+                                Available: {status.available} • Required: {status.required}
+                              </Typography>
+                            </Box>
+                          </Alert>
+                          {!isSufficient && (
+                            <Typography variant="caption" sx={{ color: '#ff9e64', mt: 1, display: 'block', fontWeight: 600 }}>
+                              * Please select another sheet preset or update stock in the Sheets module.
+                            </Typography>
+                          )}
+                        </Box>
+                      );
+                    })()}
+                  </>
+                )}
+              </Stack>
+
+              {/* Interactive Optimization Level Dropdown */}
+              <FormControl size="small" fullWidth sx={{ mb: 2 }}>
+                <InputLabel id="opt-level-label" sx={{ color: '#a9b1d6' }}>Optimization Level</InputLabel>
+                <Select
+                  labelId="opt-level-label"
+                  value={config.optimizationLevel}
+                  label="Optimization Level"
+                  onChange={(e) => handleConfigChange('optimizationLevel', e.target.value)}
+                  sx={{
+                    color: '#ffffff',
+                    '.MuiOutlinedInput-notchedOutline': { borderColor: 'rgba(255,255,255,0.1)' }
+                  }}
+                >
+                  <MenuItem value="greedy">Greedy Placement (Fastest)</MenuItem>
+                  <MenuItem value="fast">Genetic Fast (10 Gens)</MenuItem>
+                  <MenuItem value="balanced">Genetic Balanced (50 Gens)</MenuItem>
+                  <MenuItem value="maximum">Genetic Maximum (200 Gens)</MenuItem>
+                </Select>
+              </FormControl>
 
               {/* Strategy detailed description */}
               {renderStrategyDescription()}
@@ -876,7 +1259,7 @@ export default function ReviewNestJob() {
               )}
             </Paper>
 
-            {/* 2. Layout Canvas Empty Stock Sheet Preview */}
+            {/* Layout Canvas Empty Stock Sheet Preview */}
             <Paper sx={{ p: 3, bgcolor: '#0f1319', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '12px' }}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
                 <Typography variant="h6" sx={{ color: '#ffffff', fontWeight: 700 }}>
@@ -1002,7 +1385,7 @@ export default function ReviewNestJob() {
             <Button
               variant="contained"
               fullWidth
-              disabled={files.length === 0 || generating}
+              disabled={files.length === 0 || generating || checkInventoryStatus().status === 'insufficient' || checkInventoryStatus().status === 'zero'}
               onClick={handleGenerateNest}
               startIcon={generating ? <CircularProgress size={20} color="inherit" /> : <StartIcon />}
               sx={{
@@ -1029,6 +1412,61 @@ export default function ReviewNestJob() {
           </Stack>
         </Grid>
       </Grid>
+
+      {/* Operator Prompt Dialog for Nesting Transaction */}
+      <Dialog 
+        open={promptOpen} 
+        onClose={() => setPromptOpen(false)}
+        PaperProps={{
+          sx: {
+            bgcolor: '#0f1319',
+            border: '1px solid rgba(255,255,255,0.08)',
+            borderRadius: '12px',
+            minWidth: '320px'
+          }
+        }}
+      >
+        <DialogTitle sx={{ color: '#ffffff', fontWeight: 800 }}>Operator Details Required</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ color: '#a9b1d6', mb: 2 }}>
+            Please provide your operator credentials to initialize this nesting run.
+          </Typography>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <TextField
+              label="Operator Name"
+              size="small"
+              value={operatorName}
+              onChange={(e) => setOperatorName(e.target.value)}
+              fullWidth
+              sx={{ '& .MuiOutlinedInput-root fieldset': { borderColor: 'rgba(255,255,255,0.1)' } }}
+            />
+            <TextField
+              label="Email ID"
+              type="email"
+              size="small"
+              value={operatorEmail}
+              onChange={(e) => setOperatorEmail(e.target.value)}
+              fullWidth
+              sx={{ '& .MuiOutlinedInput-root fieldset': { borderColor: 'rgba(255,255,255,0.1)' } }}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 3 }}>
+          <Button onClick={() => setPromptOpen(false)} sx={{ color: '#a9b1d6', textTransform: 'none' }}>Cancel</Button>
+          <Button
+            onClick={handleConfirmNesting}
+            variant="contained"
+            disabled={!operatorName.trim() || !operatorEmail.trim()}
+            sx={{
+              bgcolor: '#0d9488',
+              textTransform: 'none',
+              '&:hover': { bgcolor: '#0f766e' }
+            }}
+          >
+            Confirm Nesting
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

@@ -85,8 +85,8 @@ export const api = {
   },
 
   // Nesting Jobs
-  startNestingJob: async (projectId, optimizationLevel = 'greedy', sheetWidth = 1000, sheetHeight = 1000, remnantId = null, nestingMode = 'multi') => {
-    const response = await apiClient.post(`/nesting/start/${projectId}`, { optimizationLevel, sheetWidth, sheetHeight, remnantId, nestingMode });
+  startNestingJob: async (projectId, optimizationLevel = 'greedy', sheetWidth = 1000, sheetHeight = 1000, remnantId = null, nestingMode = 'multi', operatorName = null, operatorEmail = null) => {
+    const response = await apiClient.post(`/nesting/start/${projectId}`, { optimizationLevel, sheetWidth, sheetHeight, remnantId, nestingMode, operatorName, operatorEmail });
     return response.data;
   },
   getJobStatus: async (jobId, progressOnly = false) => {
@@ -173,6 +173,48 @@ export const api = {
   // AI Copilot
   chatCopilot: async (jobId, message) => {
     const response = await apiClient.post('/copilot/chat', { jobId, message });
+    return response.data;
+  },
+
+  // Sheets Inventory
+  getSheets: async () => {
+    const response = await apiClient.get('/sheets');
+    return response.data;
+  },
+  addSheet: async (payload) => {
+    const response = await apiClient.post('/sheets', payload);
+    return response.data;
+  },
+  updateSheet: async (id, payload) => {
+    const response = await apiClient.put(`/sheets/${id}`, payload);
+    return response.data;
+  },
+  deleteSheet: async (id, payload) => {
+    const response = await apiClient.delete(`/sheets/${id}`, { data: payload });
+    return response.data;
+  },
+  getSheetHistory: async () => {
+    const response = await apiClient.get('/sheets/history');
+    return response.data;
+  },
+  getRemnantHistory: async () => {
+    const response = await apiClient.get('/sheets/remnant-history');
+    return response.data;
+  },
+  getAuditLogs: async () => {
+    const response = await apiClient.get('/sheets/audit-logs');
+    return response.data;
+  },
+  clearConsumptionHistory: async (payload) => {
+    const response = await apiClient.delete('/sheets/history/clear', { data: payload });
+    return response.data;
+  },
+  clearRemnantHistory: async (payload) => {
+    const response = await apiClient.delete('/sheets/remnant-history/clear', { data: payload });
+    return response.data;
+  },
+  clearAuditLogs: async (payload) => {
+    const response = await apiClient.delete('/sheets/audit-logs/clear', { data: payload });
     return response.data;
   },
 };

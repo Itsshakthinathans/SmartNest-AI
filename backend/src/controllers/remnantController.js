@@ -28,14 +28,14 @@ const getAllRemnants = async (req, res) => {
   }
 };
 
-// 2. Recommend remnants for a project
+// 2. Recommend remnants for a project (with advanced shape-fitment simulator checks)
 const recommendRemnantsForProject = async (req, res) => {
   const { projectId } = req.params;
 
   try {
     // A. Fetch project details
     const projectQuery = 'SELECT id, material_type, material_thickness FROM projects WHERE id = $1';
-    const projectResult = await pool.query(projectQuery, [projectId]);
+    const projectResult = pool ? await pool.query(projectQuery, [projectId]) : { rows: [] };
     
     if (projectResult.rows.length === 0) {
       return res.status(404).json({
@@ -45,16 +45,58 @@ const recommendRemnantsForProject = async (req, res) => {
     }
 
     const project = projectResult.rows[0];
-    const { material_type, material_thickness } = project;
+    const material_type = project.material_type || project.material_type || 'Mild Steel';
+    const material_thickness = parseFloat(project.material_thickness || project.material_thickness || 1);
 
-    // B. Calculate required area (sum of area * quantity for files in project)
-    const areaQuery = 'SELECT SUM(COALESCE(area, 0.0) * COALESCE(quantity, 1)) AS required_area FROM uploaded_files WHERE project_id = $1';
-    const areaResult = await pool.query(areaQuery, [projectId]);
-    const requiredArea = parseFloat(areaResult.rows[0].required_area || 0);
+    // B. Fetch project files
+    const filesQuery = 'SELECT id, file_name, file_path, quantity, area FROM uploaded_files WHERE project_id = $1 ORDER BY id ASC';
+    const filesResult = pool ? await pool.query(filesQuery, [projectId]) : { rows: [] };
+    const files = filesResult.rows;
 
-    // C. Query compatible remnants:
-    // Match material type, material thickness, and remaining area >= required area.
-    // Exclude remnants from the current project and sort by remaining area ascending.
+    if (files.length === 0) {
+      return res.status(200).json({
+        projectId,
+        materialType: material_type,
+        materialThickness: material_thickness,
+        requiredArea: 0,
+        recommendations: []
+      });
+    }
+
+    // C. Calculate total required area
+    const totalRequiredArea = files.reduce((sum, f) => sum + (parseFloat(f.area || 0) * (f.quantity || 1)), 0);
+
+    // D. Extract bounding box dimensions (width/height) from SVGs for simulation
+    const path = require('path');
+    const fs = require('fs');
+    const enrichedFiles = files.map(f => {
+      const absolutePath = path.join(__dirname, '..', f.file_path);
+      const svgPath = absolutePath + '.svg';
+      let width = 0, height = 0;
+      if (fs.existsSync(svgPath)) {
+        try {
+          const content = fs.readFileSync(svgPath, 'utf8');
+          const svgTagMatch = content.match(/<svg[^>]*>/);
+          if (svgTagMatch) {
+            const svgTag = svgTagMatch[0];
+            const widthMatch = svgTag.match(/width="([^"]+)"/);
+            const heightMatch = svgTag.match(/height="([^"]+)"/);
+            width = widthMatch ? parseFloat(widthMatch[1]) : 0;
+            height = heightMatch ? parseFloat(heightMatch[1]) : 0;
+          }
+        } catch (e) {
+          console.error('[RemnantController] Failed to parse SVG metadata for recommendation:', e.message);
+        }
+      }
+      return {
+        ...f,
+        width: width || 100,
+        height: height || 100,
+        area: parseFloat(f.area) || (width * height)
+      };
+    });
+
+    // E. Query compatible remnants based on material, thickness, and area
     const remnantsQuery = `
       SELECT r.*, p.project_name
       FROM remnants r
@@ -67,20 +109,106 @@ const recommendRemnantsForProject = async (req, res) => {
         AND r.status = 'Available'
       ORDER BY r.remaining_area ASC
     `;
-    
-    const remnantsResult = await pool.query(remnantsQuery, [
+    const remnantsResult = pool ? await pool.query(remnantsQuery, [
       material_type,
       material_thickness,
-      requiredArea,
+      totalRequiredArea,
       projectId
-    ]);
+    ]) : { rows: [] };
+
+    // F. Filter candidates through dimensional and BLF simulator checks
+    const suitableRemnants = [];
+
+    for (const rem of remnantsResult.rows) {
+      const stockWidth = rem.remaining_width;
+      const stockHeight = rem.remaining_height;
+
+      // 1. Basic Bounding Box dimension check (Check if any single part is physically too large to fit inside the remnant)
+      let fitsDimensionalCheck = true;
+      for (const file of enrichedFiles) {
+        const canFitOrient = (file.width <= stockWidth && file.height <= stockHeight) || 
+                              (file.height <= stockWidth && file.width <= stockHeight);
+        if (!canFitOrient) {
+          fitsDimensionalCheck = false;
+          break;
+        }
+      }
+
+      if (!fitsDimensionalCheck) continue;
+
+      // 2. Perform a Bottom-Left-Fill (BLF) packing simulation
+      const partsToPack = [];
+      enrichedFiles.forEach(f => {
+        for (let q = 0; q < (f.quantity || 1); q++) {
+          partsToPack.push({
+            fileId: f.id,
+            width: f.width,
+            height: f.height
+          });
+        }
+      });
+
+      // Sort parts by bounding box area descending
+      partsToPack.sort((a, b) => (b.width * b.height) - (a.width * a.height));
+
+      const placedBoxes = [];
+      let allFitted = true;
+
+      for (const part of partsToPack) {
+        let placed = false;
+        const orientations = [
+          { w: part.width, h: part.height },
+          { w: part.height, h: part.width }
+        ];
+
+        for (const orientation of orientations) {
+          const w = orientation.w;
+          const h = orientation.h;
+          const step = 20; // 20mm step size for rapid recommendation checking
+
+          for (let y = 0; y <= stockHeight - h; y += step) {
+            for (let x = 0; x <= stockWidth - w; x += step) {
+              let collision = false;
+              for (const pb of placedBoxes) {
+                const overlap = !(x + w <= pb.x || 
+                                  pb.x + pb.w <= x || 
+                                  y + h <= pb.y || 
+                                  pb.y + pb.h <= y);
+                if (overlap) {
+                  collision = true;
+                  break;
+                }
+              }
+
+              if (!collision) {
+                placedBoxes.push({ x, y, w, h });
+                placed = true;
+                break;
+              }
+            }
+            if (placed) break;
+          }
+          if (placed) break;
+        }
+
+        if (!placed) {
+          allFitted = false;
+          break;
+        }
+      }
+
+      // If all parts fitted in the remnant, it is a fully suitable candidate!
+      if (allFitted) {
+        suitableRemnants.push(rem);
+      }
+    }
 
     return res.status(200).json({
       projectId,
       materialType: material_type,
-      materialThickness: parseFloat(material_thickness),
-      requiredArea,
-      recommendations: remnantsResult.rows
+      materialThickness: material_thickness,
+      requiredArea: totalRequiredArea,
+      recommendations: suitableRemnants
     });
 
   } catch (err) {
@@ -92,7 +220,6 @@ const recommendRemnantsForProject = async (req, res) => {
     });
   }
 };
-
 // 3. Get remnant by ID (with parent-child lineage)
 const getRemnantById = async (req, res) => {
   const { id } = req.params;
