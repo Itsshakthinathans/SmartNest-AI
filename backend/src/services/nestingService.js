@@ -918,10 +918,10 @@ function placeParts(sheets, parts, config, nestindex) {
       if (config && config.remnantId) {
         break;
       }
-      const template = originalSheets[0];
+      const template = originalSheets[originalSheets.length - 1];
       if (!template) break;
       sheet = clonePolygonWithChildren(template);
-      sheet.source = 0;
+      sheet.source = template.source;
       sheet.id = allplacements.length;
     }
 
@@ -1381,7 +1381,7 @@ function evaluateIndividual(sheets, individual, config) {
 // 4. runDeepnestNext Service Implementation
 // ==========================================
 
-const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', sheetWidth = 1000, sheetHeight = 1000, strategy = 'single', onProgress = null, remnantId = null) => {
+const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', sheetWidth = 1000, sheetHeight = 1000, strategy = 'single', onProgress = null, remnantId = null, configuredSheets = null) => {
   prepareEnvironment();
   if (global.db && global.db.cache) {
     if (global.currentProjectId !== projectId) {
@@ -1574,40 +1574,77 @@ const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', s
 
   console.log(`[NestingService] Nesting engine executing for ${partsToNest.length} total parts...`);
 
-  // Sheet dimensions or custom remnant geometry
-  let sheet = null;
-  if (remnantId) {
-    try {
-      const { pool } = require('../config/database');
-      const remnantRes = await pool.query('SELECT geometry FROM remnants WHERE id = $1', [remnantId]);
-      if (remnantRes.rows.length > 0 && remnantRes.rows[0].geometry) {
-        const geom = remnantRes.rows[0].geometry;
-        let outer = geom.outer.map(pt => ({ x: pt.x, y: pt.y }));
-        let holes = (geom.holes || []).map(hole => hole.map(pt => ({ x: pt.x, y: pt.y })));
-        
-        sheet = outer;
-        sheet.children = holes;
-        console.log(`[NestingService] Loaded custom remnant stock polygon with ${sheet.length} points and ${sheet.children.length} holes.`);
+  // Sheet dimensions or custom remnant geometry initialization
+  const sheets = [];
+  if (configuredSheets && Array.isArray(configuredSheets) && configuredSheets.length > 0) {
+    console.log(`[NestingService] Initializing sheets array from ${configuredSheets.length} configured sheets.`);
+    const { pool } = require('../config/database');
+    for (let idx = 0; idx < configuredSheets.length; idx++) {
+      const conf = configuredSheets[idx];
+      let currentSheet = null;
+      if (conf.source === 'remnant' && conf.remnantId) {
+        try {
+          const remnantRes = await pool.query('SELECT geometry FROM remnants WHERE id = $1', [conf.remnantId]);
+          if (remnantRes.rows.length > 0 && remnantRes.rows[0].geometry) {
+            const geom = remnantRes.rows[0].geometry;
+            let outer = geom.outer.map(pt => ({ x: pt.x, y: pt.y }));
+            let holes = (geom.holes || []).map(hole => hole.map(pt => ({ x: pt.x, y: pt.y })));
+            
+            currentSheet = outer;
+            currentSheet.children = holes;
+            console.log(`[NestingService] Sheet ${idx + 1} loaded remnant RM-${conf.remnantId} geometry.`);
+          }
+        } catch (dbErr) {
+          console.error(`[NestingService] Failed to load remnant geometry for Sheet ${idx + 1}, falling back to rectangular:`, dbErr.message);
+        }
       }
-    } catch (dbErr) {
-      console.error('[NestingService] Failed to load remnant geometry, falling back to rectangular sheet:', dbErr.message);
+      if (!currentSheet) {
+        const sW = conf.width || sheetWidth;
+        const sH = conf.height || sheetHeight;
+        currentSheet = [
+          { x: 0, y: 0 },
+          { x: sW, y: 0 },
+          { x: sW, y: sH },
+          { x: 0, y: sH }
+        ];
+        currentSheet.children = [];
+      }
+      currentSheet.source = -(idx + 1);
+      currentSheet.id = idx;
+      sheets.push(currentSheet);
     }
+  } else {
+    // Legacy fallback (single sheet template)
+    let sheet = null;
+    if (remnantId) {
+      try {
+        const { pool } = require('../config/database');
+        const remnantRes = await pool.query('SELECT geometry FROM remnants WHERE id = $1', [remnantId]);
+        if (remnantRes.rows.length > 0 && remnantRes.rows[0].geometry) {
+          const geom = remnantRes.rows[0].geometry;
+          let outer = geom.outer.map(pt => ({ x: pt.x, y: pt.y }));
+          let holes = (geom.holes || []).map(hole => hole.map(pt => ({ x: pt.x, y: pt.y })));
+          sheet = outer;
+          sheet.children = holes;
+          console.log(`[NestingService] Loaded custom remnant stock polygon with ${sheet.length} points and ${sheet.children.length} holes.`);
+        }
+      } catch (dbErr) {
+        console.error('[NestingService] Failed to load remnant geometry, falling back to rectangular sheet:', dbErr.message);
+      }
+    }
+    if (!sheet) {
+      sheet = [
+        { x: 0, y: 0 },
+        { x: sheetWidth, y: 0 },
+        { x: sheetWidth, y: sheetHeight },
+        { x: 0, y: sheetHeight }
+      ];
+      sheet.children = [];
+    }
+    sheet.source = -1;
+    sheet.id = 0;
+    sheets.push(sheet);
   }
-
-  if (!sheet) {
-    sheet = [
-      { x: 0, y: 0 },
-      { x: sheetWidth, y: 0 },
-      { x: sheetWidth, y: sheetHeight },
-      { x: 0, y: sheetHeight }
-    ];
-    sheet.children = [];
-  }
-
-  sheet.source = 0;
-  sheet.id = 0;
-
-  const sheets = [sheet];
 
   const config = {
     clipperScale: 10000000,
@@ -1629,7 +1666,13 @@ const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', s
 
   let result;
   if (generations === 0) {
-    result = placeParts(sheets, partsToNest, config, 0);
+    const sheetsClone = sheets.map(s => {
+      const sh = clonePolygonWithChildren(s);
+      sh.id = s.id;
+      sh.source = s.source;
+      return sh;
+    });
+    result = placeParts(sheetsClone, partsToNest, config, 0);
   } else {
     console.log(`[NestingService] Starting Genetic Optimization with ${generations} generations...`);
     const adam = partsToNest.map(p => {
@@ -1699,12 +1742,120 @@ const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', s
   const svgOutPath = path.join(resultsDir, `nested_output${suffix}.svg`);
   const jsonOutPath = path.join(resultsDir, `nested_output${suffix}.json`);
 
+  // Recalculate Layout and Net Sheet-wise and overall utilizations for output JSON and SVG
+  let totalUsableSheetArea = 0;
+  let totalPlacedPartOuterArea = 0;
+  let totalPlacedPartTrueArea = 0;
+  const sheetwiseUtils = [];
+  const rawSheetwiseUtils = [];
+  const sheetwiseNetUtils = [];
+  const rawSheetwiseNetUtils = [];
+
+  if (result.placements && result.placements.length > 0) {
+    result.placements.forEach((sheetPlacement, sheetIdx) => {
+      const conf = (configuredSheets && configuredSheets[sheetIdx]) || (configuredSheets && configuredSheets[configuredSheets.length - 1]);
+      const currentSheet = sheets[sheetIdx] || sheets[sheets.length - 1] || sheets[0];
+      const sheetArea = getTrueArea(currentSheet);
+      totalUsableSheetArea += sheetArea;
+
+      let sheetPlacedOuterArea = 0;
+      let sheetPlacedTrueArea = 0;
+      sheetPlacement.sheetplacements.forEach(p => {
+        const origPart = partsToNest.find(part => part.id === p.id);
+        if (origPart) {
+          sheetPlacedOuterArea += getOuterArea(origPart);
+          sheetPlacedTrueArea += getTrueArea(origPart);
+        }
+      });
+      totalPlacedPartOuterArea += sheetPlacedOuterArea;
+      totalPlacedPartTrueArea += sheetPlacedTrueArea;
+
+      const sheetUtil = sheetArea > 0 ? (sheetPlacedOuterArea / sheetArea) * 100 : 0;
+      sheetPlacement.utilization = parseFloat(sheetUtil.toFixed(2));
+      sheetwiseUtils.push(parseFloat(sheetUtil.toFixed(2)));
+      rawSheetwiseUtils.push(sheetUtil);
+
+      const sheetNetUtil = sheetArea > 0 ? (sheetPlacedTrueArea / sheetArea) * 100 : 0;
+      sheetwiseNetUtils.push(parseFloat(sheetNetUtil.toFixed(2)));
+      rawSheetwiseNetUtils.push(sheetNetUtil);
+    });
+  }
+  const overallUtil = totalUsableSheetArea > 0 ? (totalPlacedPartOuterArea / totalUsableSheetArea) * 100 : 0;
+  const avgSheetUtil = getAverageUtilization(rawSheetwiseUtils);
+
+  const netUtil = totalUsableSheetArea > 0 ? (totalPlacedPartTrueArea / totalUsableSheetArea) * 100 : 0;
+  const avgSheetNetUtil = getAverageUtilization(rawSheetwiseNetUtils);
+
+  console.log(`\n=== NESTING SERVICE DEBUG VERIFICATION ===`);
+  if (result.placements && result.placements.length > 0) {
+    result.placements.forEach((sheetPlacement, sheetIdx) => {
+      const conf = (configuredSheets && configuredSheets[sheetIdx]) || (configuredSheets && configuredSheets[configuredSheets.length - 1]);
+      const currentSheet = sheets[sheetIdx] || sheets[sheets.length - 1] || sheets[0];
+      const sheetArea = getTrueArea(currentSheet);
+      let sheetPlacedOuterArea = 0;
+      let sheetPlacedTrueArea = 0;
+      sheetPlacement.sheetplacements.forEach(p => {
+        const origPart = partsToNest.find(part => part.id === p.id);
+        if (origPart) {
+          sheetPlacedOuterArea += getOuterArea(origPart);
+          sheetPlacedTrueArea += getTrueArea(origPart);
+        }
+      });
+      const sheetUtil = sheetArea > 0 ? (sheetPlacedOuterArea / sheetArea) * 100 : 0;
+      const sheetNetUtil = sheetArea > 0 ? (sheetPlacedTrueArea / sheetArea) * 100 : 0;
+      console.log(`Sheet ${sheetIdx + 1}`);
+      console.log(`- Placed Area (Outer Contour): ${sheetPlacedOuterArea.toFixed(2)} mm²`);
+      console.log(`- Placed Area (True Net): ${sheetPlacedTrueArea.toFixed(2)} mm²`);
+      console.log(`- Usable Area: ${sheetArea.toFixed(2)} mm²`);
+      console.log(`- Layout Utilization: ${sheetUtil.toFixed(2)}%`);
+      console.log(`- Net Material Utilization: ${sheetNetUtil.toFixed(2)}%`);
+    });
+  }
+  console.log(`Overall Placed Outer Area: ${totalPlacedPartOuterArea.toFixed(2)} mm²`);
+  console.log(`Overall Placed True Net Area: ${totalPlacedPartTrueArea.toFixed(2)} mm²`);
+  console.log(`Overall Used Sheet Area: ${totalUsableSheetArea.toFixed(2)} mm²`);
+  console.log(`Overall Layout Utilization: ${overallUtil.toFixed(2)}%`);
+  console.log(`Overall Net Material Utilization: ${netUtil.toFixed(2)}%`);
+  console.log(`Average Sheet Layout Utilization: ${avgSheetUtil.toFixed(2)}%`);
+  console.log(`Average Sheet Net Material Utilization: ${avgSheetNetUtil.toFixed(2)}%`);
+  console.log(`statistics.sheetwiseUtilizations (Layout):`, sheetwiseUtils);
+  console.log(`Complete statistics object:`, {
+    overallUtilization: parseFloat(overallUtil.toFixed(2)),
+    averageSheetUtilization: avgSheetUtil,
+    sheetwiseUtilizations: sheetwiseUtils,
+    netUtilization: parseFloat(netUtil.toFixed(2)),
+    sheetwiseNetUtilizations: sheetwiseNetUtils
+  });
+  console.log(`=========================================\n`);
+
+  result.utilisation = parseFloat(overallUtil.toFixed(2));
+  result.statistics = {
+    overallUtilization: parseFloat(overallUtil.toFixed(2)),
+    averageSheetUtilization: avgSheetUtil,
+    sheetwiseUtilizations: sheetwiseUtils,
+    netUtilization: parseFloat(netUtil.toFixed(2)),
+    sheetwiseNetUtilizations: sheetwiseNetUtils
+  };
+
+
   // Renders the visual SVG file
   const sheetSpacing = 50;
   const numSheets = result.placements && result.placements.length > 0 ? result.placements.length : 1;
-  const totalSvgHeight = numSheets * sheetHeight + (numSheets - 1) * sheetSpacing + 100;
+  
+  let totalSvgHeight = 100;
+  let maxSheetWidth = 0;
+  for (let sheetIdx = 0; sheetIdx < numSheets; sheetIdx++) {
+    const conf = (configuredSheets && configuredSheets[sheetIdx]) || (configuredSheets && configuredSheets[configuredSheets.length - 1]);
+    const currentHeight = conf ? conf.height : sheetHeight;
+    const currentWidth = conf ? conf.width : sheetWidth;
+    totalSvgHeight += currentHeight;
+    if (currentWidth > maxSheetWidth) {
+      maxSheetWidth = currentWidth;
+    }
+  }
+  totalSvgHeight += (numSheets - 1) * sheetSpacing;
 
-  let svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="${sheetWidth + 100}" height="${totalSvgHeight}" style="background:#1e1e24; padding:20px; border-radius:10px;">\n`;
+  let svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="${maxSheetWidth + 100}" height="${totalSvgHeight}" style="background:#1e1e24; padding:20px; border-radius:10px;">\n`;
 
   const colors = [
     "#ff9e64", "#9ece6a", "#73daca", "#b4f9f8", 
@@ -1716,29 +1867,37 @@ const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', s
   const obstacles = [];
   if (result.placements && result.placements.length > 0) {
     result.placements.forEach((sheetPlacement, sheetIdx) => {
-      const yOffset = sheetIdx * (sheetHeight + sheetSpacing);
+      // yOffset is computed based on heights of all previous sheets
+      let yOffset = 0;
+      for (let prevIdx = 0; prevIdx < sheetIdx; prevIdx++) {
+        const prevConf = (configuredSheets && configuredSheets[prevIdx]) || (configuredSheets && configuredSheets[configuredSheets.length - 1]);
+        yOffset += prevConf ? prevConf.height : sheetHeight;
+      }
+      yOffset += sheetIdx * sheetSpacing;
 
-      if (remnantId && sheet && sheet.length > 0) {
-        let sheetPathD = `M ${sheet.map(pt => `${pt.x + 10} ${pt.y + yOffset + 10}`).join(' L ')} Z`;
-        if (sheet.children && sheet.children.length > 0) {
-          sheet.children.forEach(child => {
+      const conf = (configuredSheets && configuredSheets[sheetIdx]) || (configuredSheets && configuredSheets[configuredSheets.length - 1]);
+      const isRemnant = conf ? (conf.source === 'remnant') : (sheetIdx === 0 && remnantId);
+      const currentSheet = sheets[sheetIdx] || sheets[sheets.length - 1] || sheets[0];
+
+      if (isRemnant && currentSheet && currentSheet.length > 0) {
+        let sheetPathD = `M ${currentSheet.map(pt => `${pt.x + 10} ${pt.y + yOffset + 10}`).join(' L ')} Z`;
+        if (currentSheet.children && currentSheet.children.length > 0) {
+          currentSheet.children.forEach(child => {
             sheetPathD += ` M ${child.map(pt => `${pt.x + 10} ${pt.y + yOffset + 10}`).join(' L ')} Z`;
           });
         }
         svgContent += `  <path id="sheet-boundary" d="${sheetPathD}" fill="none" stroke="#0d9488" stroke-width="2" fill-rule="evenodd" />\n`;
       } else {
-        svgContent += `  <rect x="10" y="${yOffset + 10}" width="${sheetWidth}" height="${sheetHeight}" fill="none" stroke="#565f89" stroke-width="2" stroke-dasharray="5,5" />\n`;
+        const sW = conf ? conf.width : sheetWidth;
+        const sH = conf ? conf.height : sheetHeight;
+        svgContent += `  <rect x="10" y="${yOffset + 10}" width="${sW}" height="${sH}" fill="none" stroke="#565f89" stroke-width="2" stroke-dasharray="5,5" />\n`;
       }
 
-      let sheetPlacedArea = 0;
-      sheetPlacement.sheetplacements.forEach(p => {
-        const origPart = partsToNest.find(part => part.id === p.id);
-        if (origPart) sheetPlacedArea += polygonMaterialArea(origPart);
-      });
-      const sheetArea = sheetWidth * sheetHeight;
-      const sheetUtil = (sheetPlacedArea / sheetArea) * 100;
+      const sW = conf ? conf.width : sheetWidth;
+      const sH = conf ? conf.height : sheetHeight;
+      const sheetUtil = sheetPlacement.utilization;
 
-      svgContent += `  <text x="20" y="${yOffset + 30}" fill="#a9b1d6" font-family="sans-serif" font-size="14">Sheet ${sheetIdx + 1}: ${sheetWidth} x ${sheetHeight} - Placed Parts: ${sheetPlacement.sheetplacements.length}/${partsToNest.length} - Utilization: ${sheetUtil.toFixed(2)}%</text>\n`;
+      svgContent += `  <text x="20" y="${yOffset + 30}" fill="#a9b1d6" font-family="sans-serif" font-size="14">Sheet ${sheetIdx + 1}: ${sW} x ${sH} - Placed Parts: ${sheetPlacement.sheetplacements.length}/${partsToNest.length} - Utilization: ${sheetUtil.toFixed(2)}%</text>\n`;
 
       sheetPlacement.sheetplacements.forEach((placement, idx) => {
         const origPart = partsToNest.find(p => p.id === placement.id);
@@ -1856,7 +2015,26 @@ const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', s
   const cuttingTime = calculateRealisticCuttingTime(materialType, thickness, partsToNest, result.placements);
 
   // Perform leftover extraction post-nesting
-  const leftoverRegions = extractLeftoverGeometry(sheet, result.placements[0]?.sheetplacements || [], partsToNest, config.clipperScale);
+  const leftoverRegions = [];
+  const leftoversBySheet = {};
+  sheets.forEach((sheetGeom, sheetIdx) => {
+    const sheetPlacement = result.placements && result.placements[sheetIdx];
+    const sheetPlacements = sheetPlacement ? (sheetPlacement.sheetplacements || []) : [];
+    
+    const sheetLeftovers = extractLeftoverGeometry(sheetGeom, sheetPlacements, partsToNest, config.clipperScale);
+    leftoversBySheet[sheetIdx] = sheetLeftovers.map(region => {
+      region.sheetIndex = sheetIdx;
+      region.sheetWidth = sheetGeom.width || (configuredSheets && configuredSheets[sheetIdx] ? configuredSheets[sheetIdx].width : sheetWidth);
+      region.sheetHeight = sheetGeom.height || (configuredSheets && configuredSheets[sheetIdx] ? configuredSheets[sheetIdx].height : sheetHeight);
+      region.sheetSource = (configuredSheets && configuredSheets[sheetIdx]) ? configuredSheets[sheetIdx].source : 'standard';
+      region.parentRemnantId = (sheetIdx === 0) ? (remnantId || null) : ((configuredSheets && configuredSheets[sheetIdx] && configuredSheets[sheetIdx].source === 'remnant') ? configuredSheets[sheetIdx].id : null);
+      return region;
+    });
+  });
+  Object.keys(leftoversBySheet).forEach(sId => {
+    leftoverRegions.push(...leftoversBySheet[sId]);
+  });
+
 
   return {
     utilization: parseFloat(result.utilisation.toFixed(2)),
@@ -1873,7 +2051,8 @@ const runDeepnestNext = async (files, projectId, optimizationLevel = 'greedy', s
     contourCount,
     placements: result.placements,
     estimatedCuttingTime: cuttingTime,
-    leftoverRegions
+    leftoverRegions,
+    statistics: result.statistics
   };
 };
 
@@ -2158,26 +2337,37 @@ const updateLayoutFiles = async (jobId, projectFiles, placements, strategy = nul
     });
   });
 
-  const polygonMaterialArea = (poly) => {
-    let area = Math.abs(GeometryUtil.polygonArea(poly.originalPoints || poly));
-    if (poly.originalChildren || poly.children) {
-      const children = poly.originalChildren || poly.children;
-      children.forEach(child => {
-        area -= Math.abs(GeometryUtil.polygonArea(child));
-      });
-    }
-    return area;
-  };
+  const configuredSheets = job.configured_sheets || [];
 
-  const sheetArea = job.remnant_id ? (sheet.area || sheetWidth * sheetHeight) : (sheetWidth * sheetHeight);
-  let placedArea = 0;
-  sheetplacements.forEach(p => {
-    const origPart = partsToNest.find(part => part.partId === p.partId) || partsToNest.find(part => part.id === p.id) || partsToNest.find(part => part.filename === p.filename);
-    if (origPart) {
-      placedArea += polygonMaterialArea(origPart);
+  const getSheetGeometryForIdx = async (idx) => {
+    const conf = configuredSheets[idx];
+    if (conf && conf.source === 'remnant' && conf.id) {
+      try {
+        const remnantRes = await pool.query('SELECT geometry FROM remnants WHERE id = $1', [conf.id]);
+        if (remnantRes.rows.length > 0 && remnantRes.rows[0].geometry) {
+          const geom = remnantRes.rows[0].geometry;
+          const s = geom.outer.map(pt => ({ x: pt.x, y: pt.y }));
+          s.children = (geom.holes || []).map(hole => hole.map(pt => ({ x: pt.x, y: pt.y })));
+          return s;
+        }
+      } catch (dbErr) {
+        console.error('[NestingService] Failed to load remnant geometry in updateLayoutFiles:', dbErr.message);
+      }
     }
-  });
-  const newUtilization = sheetArea > 0 ? (placedArea / sheetArea) * 100 : 0;
+    if (idx === 0 && job.remnant_id && sheet) {
+      return sheet;
+    }
+    const sW = conf ? conf.width : sheetWidth;
+    const sH = conf ? conf.height : sheetHeight;
+    const s = [
+      { x: 0, y: 0 },
+      { x: sW, y: 0 },
+      { x: sW, y: sH },
+      { x: 0, y: sH }
+    ];
+    s.children = [];
+    return s;
+  };
 
   const sheetPlacementsMap = {};
   sheetplacements.forEach(p => {
@@ -2190,25 +2380,136 @@ const updateLayoutFiles = async (jobId, projectFiles, placements, strategy = nul
 
   const maxSheetId = Math.max(0, ...sheetplacements.map(p => p.sheetId || 0));
   const placementsArray = [];
+  
+  let totalUsableSheetArea = 0;
+  let totalPlacedPartOuterArea = 0;
+  let totalPlacedPartTrueArea = 0;
+  const sheetwiseUtils = [];
+  const rawSheetwiseUtils = [];
+  const sheetwiseNetUtils = [];
+  const rawSheetwiseNetUtils = [];
+
   for (let sId = 0; sId <= maxSheetId; sId++) {
+    const sheetGeom = await getSheetGeometryForIdx(sId);
+    const sheetAreaVal = getTrueArea(sheetGeom);
+    totalUsableSheetArea += sheetAreaVal;
+
+    const sheetPlacementsList = sheetPlacementsMap[sId] || [];
+    let sheetPlacedOuterArea = 0;
+    let sheetPlacedTrueArea = 0;
+    sheetPlacementsList.forEach(p => {
+      const origPart = partsToNest.find(part => part.partId === p.partId) || partsToNest.find(part => part.id === p.id) || partsToNest.find(part => part.filename === p.filename);
+      if (origPart) {
+        sheetPlacedOuterArea += getOuterArea(origPart);
+        sheetPlacedTrueArea += getTrueArea(origPart);
+      }
+    });
+    totalPlacedPartOuterArea += sheetPlacedOuterArea;
+    totalPlacedPartTrueArea += sheetPlacedTrueArea;
+
+    const sheetUtil = sheetAreaVal > 0 ? (sheetPlacedOuterArea / sheetAreaVal) * 100 : 0;
+    sheetwiseUtils.push(parseFloat(sheetUtil.toFixed(2)));
+    rawSheetwiseUtils.push(sheetUtil);
+
+    const sheetNetUtil = sheetAreaVal > 0 ? (sheetPlacedTrueArea / sheetAreaVal) * 100 : 0;
+    sheetwiseNetUtils.push(parseFloat(sheetNetUtil.toFixed(2)));
+    rawSheetwiseNetUtils.push(sheetNetUtil);
+
     placementsArray.push({
       sheet: job.remnant_id ? sheet : null,
       sheetid: sId,
-      sheetplacements: sheetPlacementsMap[sId] || []
+      sheetplacements: sheetPlacementsList,
+      utilization: parseFloat(sheetUtil.toFixed(2))
     });
   }
 
+  const newUtilization = totalUsableSheetArea > 0 ? (totalPlacedPartOuterArea / totalUsableSheetArea) * 100 : 0;
+  const avgSheetUtil = getAverageUtilization(rawSheetwiseUtils);
+
+  const netUtilization = totalUsableSheetArea > 0 ? (totalPlacedPartTrueArea / totalUsableSheetArea) * 100 : 0;
+  const avgSheetNetUtil = getAverageUtilization(rawSheetwiseNetUtils);
+
+  console.log(`\n=== NESTING SERVICE DEBUG VERIFICATION (MANUAL ADJUSTMENT) ===`);
+  for (let sId = 0; sId <= maxSheetId; sId++) {
+    const sheetPlacementsList = sheetPlacementsMap[sId] || [];
+    let sheetPlacedOuterArea = 0;
+    let sheetPlacedTrueArea = 0;
+    sheetPlacementsList.forEach(p => {
+      const origPart = partsToNest.find(part => part.partId === p.partId) || partsToNest.find(part => part.id === p.id) || partsToNest.find(part => part.filename === p.filename);
+      if (origPart) {
+        sheetPlacedOuterArea += getOuterArea(origPart);
+        sheetPlacedTrueArea += getTrueArea(origPart);
+      }
+    });
+    const sheetGeom = placementsArray.find(pl => pl.sheetid === sId)?.sheet;
+    const sheetAreaVal = getTrueArea(sheetGeom || await getSheetGeometryForIdx(sId));
+    const sheetUtil = sheetAreaVal > 0 ? (sheetPlacedOuterArea / sheetAreaVal) * 100 : 0;
+    const sheetNetUtil = sheetAreaVal > 0 ? (sheetPlacedTrueArea / sheetAreaVal) * 100 : 0;
+
+    console.log(`Sheet ${sId + 1}`);
+    console.log(`- Placed Area (Outer Contour): ${sheetPlacedOuterArea.toFixed(2)} mm²`);
+    console.log(`- Placed Area (True Net): ${sheetPlacedTrueArea.toFixed(2)} mm²`);
+    console.log(`- Usable Area: ${sheetAreaVal.toFixed(2)} mm²`);
+    console.log(`- Layout Utilization: ${sheetUtil.toFixed(2)}%`);
+    console.log(`- Net Material Utilization: ${sheetNetUtil.toFixed(2)}%`);
+  }
+  console.log(`Overall Placed Outer Area: ${totalPlacedPartOuterArea.toFixed(2)} mm²`);
+  console.log(`Overall Placed True Net Area: ${totalPlacedPartTrueArea.toFixed(2)} mm²`);
+  console.log(`Overall Used Sheet Area: ${totalUsableSheetArea.toFixed(2)} mm²`);
+  console.log(`Overall Layout Utilization: ${newUtilization.toFixed(2)}%`);
+  console.log(`Overall Net Material Utilization: ${netUtilization.toFixed(2)}%`);
+  console.log(`Average Sheet Layout Utilization: ${avgSheetUtil.toFixed(2)}%`);
+  console.log(`Average Sheet Net Material Utilization: ${avgSheetNetUtil.toFixed(2)}%`);
+  console.log(`statistics.sheetwiseUtilizations (Layout):`, sheetwiseUtils);
+  console.log(`Complete statistics object:`, {
+    overallUtilization: parseFloat(newUtilization.toFixed(2)),
+    averageSheetUtilization: avgSheetUtil,
+    sheetwiseUtilizations: sheetwiseUtils,
+    netUtilization: parseFloat(netUtilization.toFixed(2)),
+    sheetwiseNetUtilizations: sheetwiseNetUtils
+  });
+  console.log(`=============================================================\n`);
+
   const result = {
-    utilisation: newUtilization,
+    utilisation: parseFloat(newUtilization.toFixed(2)),
+    statistics: {
+      overallUtilization: parseFloat(newUtilization.toFixed(2)),
+      averageSheetUtilization: avgSheetUtil,
+      sheetwiseUtilizations: sheetwiseUtils,
+      netUtilization: parseFloat(netUtilization.toFixed(2)),
+      sheetwiseNetUtilizations: sheetwiseNetUtils
+    },
     placements: placementsArray
   };
+
 
   // 4. Render new SVG content
   const sheetSpacing = 50;
   const numSheets = result.placements && result.placements.length > 0 ? result.placements.length : 1;
-  const totalSvgHeight = numSheets * sheetHeight + (numSheets - 1) * sheetSpacing + 100;
 
-  let svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="${sheetWidth + 100}" height="${totalSvgHeight}" style="background:#1e1e24; padding:20px; border-radius:10px;">\n`;
+  const getSheetYOffset = (sheetIdx) => {
+    let offset = 0;
+    for (let i = 0; i < sheetIdx; i++) {
+      const conf = (configuredSheets && configuredSheets[i]) || (configuredSheets && configuredSheets[configuredSheets.length - 1]);
+      offset += conf ? conf.height : sheetHeight;
+    }
+    return offset + sheetIdx * sheetSpacing;
+  };
+
+  let totalSvgHeight = 100;
+  let maxSheetWidth = 0;
+  for (let sheetIdx = 0; sheetIdx < numSheets; sheetIdx++) {
+    const conf = (configuredSheets && configuredSheets[sheetIdx]) || (configuredSheets && configuredSheets[configuredSheets.length - 1]);
+    const currentHeight = conf ? conf.height : sheetHeight;
+    const currentWidth = conf ? conf.width : sheetWidth;
+    totalSvgHeight += currentHeight;
+    if (currentWidth > maxSheetWidth) {
+      maxSheetWidth = currentWidth;
+    }
+  }
+  totalSvgHeight += (numSheets - 1) * sheetSpacing;
+
+  let svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="${(maxSheetWidth || sheetWidth) + 100}" height="${totalSvgHeight}" style="background:#1e1e24; padding:20px; border-radius:10px;">\n`;
 
   const colors = [
     "#ff9e64", "#9ece6a", "#73daca", "#b4f9f8", 
@@ -2217,7 +2518,10 @@ const updateLayoutFiles = async (jobId, projectFiles, placements, strategy = nul
 
   const obstacles = [];
   result.placements.forEach((sheetPlacement, sheetIdx) => {
-    const yOffset = sheetIdx * (sheetHeight + sheetSpacing);
+    const conf = (configuredSheets && configuredSheets[sheetIdx]) || (configuredSheets && configuredSheets[configuredSheets.length - 1]);
+    const currentHeight = conf ? conf.height : sheetHeight;
+    const currentWidth = conf ? conf.width : sheetWidth;
+    const yOffset = getSheetYOffset(sheetIdx);
 
     if (job.remnant_id && sheet && sheet.length > 0) {
       let sheetPathD = `M ${sheet.map(pt => `${pt.x + 10} ${pt.y + yOffset + 10}`).join(' L ')} Z`;
@@ -2228,20 +2532,15 @@ const updateLayoutFiles = async (jobId, projectFiles, placements, strategy = nul
       }
       svgContent += `  <path id="sheet-boundary" d="${sheetPathD}" fill="none" stroke="#0d9488" stroke-width="2" fill-rule="evenodd" />\n`;
     } else {
-      svgContent += `  <rect x="10" y="${yOffset + 10}" width="${sheetWidth}" height="${sheetHeight}" fill="none" stroke="#565f89" stroke-width="2" stroke-dasharray="5,5" />\n`;
+      svgContent += `  <rect x="10" y="${yOffset + 10}" width="${currentWidth}" height="${currentHeight}" fill="none" stroke="#565f89" stroke-width="2" stroke-dasharray="5,5" />\n`;
     }
 
-    let sheetPlacedArea = 0;
-    sheetPlacement.sheetplacements.forEach(p => {
-      const origPart = partsToNest.find(part => part.partId === p.partId) || partsToNest.find(part => part.id === p.id) || partsToNest.find(part => part.filename === p.filename);
-      if (origPart) sheetPlacedArea += polygonMaterialArea(origPart);
-    });
-    const sheetAreaValue = sheetWidth * sheetHeight;
-    const sheetUtil = sheetAreaValue > 0 ? (sheetPlacedArea / sheetAreaValue) * 100 : 0;
+    const sheetUtil = sheetPlacement.utilization;
 
-    svgContent += `  <text x="20" y="${yOffset + 30}" fill="#a9b1d6" font-family="sans-serif" font-size="14">Sheet ${sheetIdx + 1}: ${sheetWidth} x ${sheetHeight} - Placed Parts: ${sheetPlacement.sheetplacements.length}/${partsToNest.length} - Utilization: ${sheetUtil.toFixed(2)}%</text>\n`;
+    svgContent += `  <text x="20" y="${yOffset + 30}" fill="#a9b1d6" font-family="sans-serif" font-size="14">Sheet ${sheetIdx + 1}: ${currentWidth} x ${currentHeight} - Placed Parts: ${sheetPlacement.sheetplacements.length}/${partsToNest.length} - Utilization: ${sheetUtil.toFixed(2)}%</text>\n`;
 
     sheetPlacement.sheetplacements.forEach((placement, idx) => {
+
       const origPart = partsToNest.find(p => p.partId === placement.partId) || partsToNest.find(p => p.id === placement.id) || partsToNest.find(p => p.filename === placement.filename);
       if (!origPart) return;
 
@@ -2303,7 +2602,30 @@ const updateLayoutFiles = async (jobId, projectFiles, placements, strategy = nul
 
   console.log(`[NestingService] Layout files updated for Job ID ${jobId} (Strategy: ${strategy || 'active'}).`);
   // Perform leftover extraction post manual adjustments saving
-  const leftoverRegions = extractLeftoverGeometry(sheet, sheetplacements, partsToNest, 10000000);
+  const leftoverRegions = [];
+  const numConfiguredSheets = configuredSheets.length > 0 ? configuredSheets.length : Math.max(1, placementsArray.length);
+  const leftoversBySheet = {};
+
+  for (let sId = 0; sId < numConfiguredSheets; sId++) {
+    const sheetPlacementsList = sheetPlacementsMap[sId] || [];
+    if (sId >= placementsArray.length && sheetPlacementsList.length === 0) {
+      continue;
+    }
+    const sheetGeom = await getSheetGeometryForIdx(sId);
+    const sheetLeftovers = extractLeftoverGeometry(sheetGeom, sheetPlacementsList, partsToNest, 10000000);
+    leftoversBySheet[sId] = sheetLeftovers.map(region => {
+      region.sheetIndex = sId;
+      region.sheetWidth = sheetGeom.width || (configuredSheets[sId] ? configuredSheets[sId].width : sheetWidth);
+      region.sheetHeight = sheetGeom.height || (configuredSheets[sId] ? configuredSheets[sId].height : sheetHeight);
+      region.sheetSource = configuredSheets[sId] ? configuredSheets[sId].source : 'standard';
+      region.parentRemnantId = (sId === 0) ? (job.remnant_id || null) : ((configuredSheets[sId] && configuredSheets[sId].source === 'remnant') ? configuredSheets[sId].id : null);
+      return region;
+    });
+  }
+  Object.keys(leftoversBySheet).forEach(sId => {
+    leftoverRegions.push(...leftoversBySheet[sId]);
+  });
+
 
   return { 
     maxX: Math.round(maxX), 
@@ -2312,7 +2634,8 @@ const updateLayoutFiles = async (jobId, projectFiles, placements, strategy = nul
     largestRemnantHeight: remnant.height,
     largestRemnantArea: remnant.area,
     leftoverRegions,
-    newUtilization
+    newUtilization,
+    statistics: result.statistics
   };
 };
 
@@ -2324,10 +2647,33 @@ const validatePlacement = async (jobId, projectFiles, placements, candidate) => 
 
   const sheetWidth = job.sheet_width;
   const sheetHeight = job.sheet_height;
+  const configuredSheets = job.configured_sheets || [];
+  const sheetIdx = candidate.sheetId || 0;
 
   // Create sheet boundaries polygon or load custom remnant geometry
   let sheetPoly = null;
-  if (job.remnant_id) {
+
+  if (configuredSheets && configuredSheets[sheetIdx]) {
+    const conf = configuredSheets[sheetIdx];
+    if (conf.source === 'remnant' && conf.remnantId) {
+      const remnantRes = await pool.query('SELECT geometry FROM remnants WHERE id = $1', [conf.remnantId]);
+      if (remnantRes.rows.length > 0 && remnantRes.rows[0].geometry) {
+        const geom = remnantRes.rows[0].geometry;
+        sheetPoly = geom.outer.map(pt => ({ x: pt.x, y: pt.y }));
+        sheetPoly.children = (geom.holes || []).map(hole => hole.map(pt => ({ x: pt.x, y: pt.y })));
+      }
+    } else {
+      sheetPoly = [
+        { x: 0, y: 0 },
+        { x: conf.width, y: 0 },
+        { x: conf.width, y: conf.height },
+        { x: 0, y: conf.height }
+      ];
+      sheetPoly.children = [];
+    }
+  }
+
+  if (!sheetPoly && job.remnant_id && sheetIdx === 0) {
     const remnantRes = await pool.query('SELECT geometry FROM remnants WHERE id = $1', [job.remnant_id]);
     if (remnantRes.rows.length > 0 && remnantRes.rows[0].geometry) {
       const geom = remnantRes.rows[0].geometry;
@@ -2435,6 +2781,7 @@ const validatePlacement = async (jobId, projectFiles, placements, candidate) => 
   // 2. Validate Overlaps with placed parts
   for (const placement of placements) {
     if (placement.id === candidate.id) continue; // Skip candidate itself
+    if ((placement.sheetId || 0) !== (candidate.sheetId || 0)) continue; // Skip parts on other sheets
 
     const otherOrigPart = partsToNest.find(p => p.partId === placement.partId) || partsToNest.find(p => p.filename === placement.filename);
     if (!otherOrigPart) continue;
@@ -2603,7 +2950,7 @@ function calculateRealisticCuttingTime(materialType, thickness, partsToNest, pla
   return parseFloat(totalTime.toFixed(2));
 }
 
-const runDeepnestNextInWorker = (files, projectId, optimizationLevel, sheetWidth, sheetHeight, strategy, onProgress, remnantId = null) => {
+const runDeepnestNextInWorker = (files, projectId, optimizationLevel, sheetWidth, sheetHeight, strategy, onProgress, remnantId = null, configuredSheets = null) => {
   return new Promise((resolve, reject) => {
     const { Worker } = require('worker_threads');
     const workerPath = path.resolve(__dirname, '../workers/nestingWorker.js');
@@ -2615,7 +2962,8 @@ const runDeepnestNextInWorker = (files, projectId, optimizationLevel, sheetWidth
         sheetWidth,
         sheetHeight,
         strategy,
-        remnantId
+        remnantId,
+        configuredSheets
       }
     });
 
@@ -2867,6 +3215,321 @@ function extractLeftoverGeometry(sheet, placements, partsToNest, scale = 1000000
   return leftoverRegions;
 }
 
+function getOuterArea(poly) {
+  prepareEnvironment();
+  if (!poly) return 0;
+  const pts = poly.outer || poly.originalPoints || (Array.isArray(poly) ? poly : null);
+  if (!pts || pts.length < 3) return 0;
+  return Math.max(0, Math.abs(global.GeometryUtil.polygonArea(pts)));
+}
+
+function getTrueArea(poly) {
+  prepareEnvironment();
+  if (!poly) return 0;
+  const pts = poly.outer || poly.originalPoints || (Array.isArray(poly) ? poly : null);
+  if (!pts || pts.length < 3) return 0;
+  let area = Math.abs(global.GeometryUtil.polygonArea(pts));
+  const children = poly.holes || poly.originalChildren || poly.children;
+  if (children && children.length > 0) {
+    children.forEach(child => {
+      if (child && child.length >= 3) {
+        area -= Math.abs(global.GeometryUtil.polygonArea(child));
+      }
+    });
+  }
+  return Math.max(0, area);
+}
+
+async function getUsedSheetsAreaForJob(job, numSheets, pool) {
+  const configuredSheets = job.configured_sheets;
+  let totalArea = 0;
+  
+  if (configuredSheets && configuredSheets.length > 0) {
+    for (let i = 0; i < numSheets; i++) {
+      const conf = configuredSheets[i] || configuredSheets[configuredSheets.length - 1];
+      if (conf.source === 'remnant' && conf.id) {
+        const remnantRes = await pool.query('SELECT geometry FROM remnants WHERE id = $1', [conf.id]);
+        if (remnantRes.rows.length > 0 && remnantRes.rows[0].geometry) {
+          totalArea += getTrueArea(remnantRes.rows[0].geometry);
+        } else {
+          const w = conf.width;
+          const h = conf.height;
+          totalArea += w * h;
+        }
+      } else {
+        const w = conf.width;
+        const h = conf.height;
+        totalArea += w * h;
+      }
+    }
+  } else if (job.remnant_id) {
+    const remnantRes = await pool.query('SELECT geometry FROM remnants WHERE id = $1', [job.remnant_id]);
+    const remnantArea = (remnantRes.rows.length > 0 && remnantRes.rows[0].geometry)
+      ? getTrueArea(remnantRes.rows[0].geometry)
+      : (job.sheet_width * job.sheet_height);
+    
+    totalArea += remnantArea;
+    for (let i = 1; i < numSheets; i++) {
+      totalArea += (job.sheet_width * job.sheet_height);
+    }
+  } else {
+    totalArea = numSheets * (job.sheet_width * job.sheet_height);
+  }
+  return totalArea;
+}
+
+function getAverageUtilization(sheetwiseUtils) {
+  if (!sheetwiseUtils || sheetwiseUtils.length === 0) return 0;
+  const sum = sheetwiseUtils.reduce((s, u) => s + u, 0);
+  return parseFloat((sum / sheetwiseUtils.length).toFixed(2));
+}
+
+const calculateIntelligentFill = async (
+  jobId, 
+  projectFiles, 
+  placements, 
+  partsToDuplicate, 
+  limits, 
+  gridStep = 25, 
+  rotations = [0, 90, 180, 270]
+) => {
+  const { pool } = require('../config/database');
+  const fs = require('fs');
+  const path = require('path');
+  
+  const jobRes = await pool.query('SELECT * FROM nest_jobs WHERE id = $1', [jobId]);
+  if (jobRes.rows.length === 0) throw new Error('Job not found');
+  const job = jobRes.rows[0];
+
+  const sheetWidth = job.sheet_width;
+  const sheetHeight = job.sheet_height;
+  const configuredSheets = job.configured_sheets || [];
+  
+  const partsToNest = [];
+  prepareEnvironment();
+  const config = { clipperScale: 10000000 };
+
+  for (let f of projectFiles) {
+    const absolutePath = path.join(__dirname, '..', f.file_path);
+    const cachedSvgPath = absolutePath + '.svg';
+    let svgString = '';
+
+    if (fs.existsSync(cachedSvgPath)) {
+      svgString = fs.readFileSync(cachedSvgPath, 'utf8');
+    } else if (fs.existsSync(absolutePath)) {
+      svgString = fs.readFileSync(absolutePath, 'utf8');
+    } else {
+      continue;
+    }
+
+    const preprocRes = preprocessor.loadSvgString(svgString, 72);
+    const doc = new DOMParser().parseFromString(preprocRes.result, 'image/svg+xml');
+    const paths = doc.getElementsByTagName('path');
+
+    const allSegments = [];
+    for (let i = 0; i < paths.length; i++) {
+      const d = paths[i].getAttribute('d');
+      if (!d) continue;
+      const subPolys = preprocessor.pointsOnSvgPath(d, 0.5);
+      subPolys.forEach((poly) => {
+        if (poly && poly.length >= 2) {
+          allSegments.push(poly);
+        }
+      });
+    }
+
+    const mergedPolys = mergeSegments(allSegments, 1.0);
+    const rawPolys = [];
+    mergedPolys.forEach((poly) => {
+      if (poly.length > 2 && Math.abs(GeometryUtil.polygonArea(poly)) > 1) {
+        rawPolys.push(poly);
+      }
+    });
+
+    const filePolys = groupPolygonsByHierarchy(rawPolys);
+    filePolys.forEach((origPoly) => {
+      const bounds = GeometryUtil.getPolygonBounds(origPoly);
+      const tolerance = Math.max(1.0, Math.max(bounds.width, bounds.height) * 0.015);
+      const simplifiedOuter = simplifyPath(origPoly, tolerance);
+      const poly = simplifiedOuter.map(pt => ({ x: pt.x, y: pt.y, exact: pt.exact }));
+      
+      if (origPoly.children && origPoly.children.length > 0) {
+        poly.children = origPoly.children.map(child => {
+          const childBounds = GeometryUtil.getPolygonBounds(child);
+          const childTol = Math.max(1.0, Math.max(childBounds.width, childBounds.height) * 0.015);
+          return simplifyPath(child, childTol).map(pt => ({ x: pt.x, y: pt.y, exact: pt.exact }));
+        });
+      }
+
+      poly.originalPoints = origPoly.map(pt => ({ x: pt.x, y: pt.y, exact: pt.exact }));
+      if (origPoly.children && origPoly.children.length > 0) {
+        poly.originalChildren = origPoly.children.map(child =>
+          child.map(pt => ({ x: pt.x, y: pt.y, exact: pt.exact }))
+        );
+      }
+
+      poly.partId = f.id;
+      poly.filename = f.file_name;
+      partsToNest.push(poly);
+    });
+  }
+
+  const currentPlacements = [...placements];
+  
+  const numSheets = configuredSheets.length > 0 
+    ? configuredSheets.length 
+    : Math.max(1, ...currentPlacements.map(p => (p.sheetId || 0) + 1));
+
+  const candidates = [];
+  partsToDuplicate.forEach(partId => {
+    const parsedId = parseInt(partId, 10);
+    const origPart = partsToNest.find(p => p.partId === parsedId);
+    if (origPart) {
+      candidates.push({
+        partId: parsedId,
+        filename: origPart.filename,
+        geometry: origPart
+      });
+    }
+  });
+
+  if (candidates.length === 0) {
+    return currentPlacements;
+  }
+
+  const getArea = (poly) => {
+    const pts = poly.originalPoints || poly;
+    return Math.abs(GeometryUtil.polygonArea(pts));
+  };
+
+  candidates.sort((a, b) => getArea(b.geometry) - getArea(a.geometry));
+
+  const placedCount = {};
+  candidates.forEach(c => {
+    placedCount[c.partId] = 0;
+  });
+
+  let maxId = Math.max(0, ...currentPlacements.map(p => p.id || 0));
+
+  for (let sheetIdx = 0; sheetIdx < numSheets; sheetIdx++) {
+    let sheetPoly = null;
+    if (configuredSheets && configuredSheets[sheetIdx]) {
+      const conf = configuredSheets[sheetIdx];
+      if (conf.source === 'remnant' && conf.remnantId) {
+        const remnantRes = await pool.query('SELECT geometry FROM remnants WHERE id = $1', [conf.remnantId]);
+        if (remnantRes.rows.length > 0 && remnantRes.rows[0].geometry) {
+          const geom = remnantRes.rows[0].geometry;
+          sheetPoly = geom.outer.map(pt => ({ x: pt.x, y: pt.y }));
+          sheetPoly.children = (geom.holes || []).map(hole => hole.map(pt => ({ x: pt.x, y: pt.y })));
+        }
+      } else {
+        sheetPoly = [
+          { x: 0, y: 0 },
+          { x: conf.width, y: 0 },
+          { x: conf.width, y: conf.height },
+          { x: 0, y: conf.height }
+        ];
+        sheetPoly.children = [];
+      }
+    }
+
+    if (!sheetPoly && job.remnant_id && sheetIdx === 0) {
+      const remnantRes = await pool.query('SELECT geometry FROM remnants WHERE id = $1', [job.remnant_id]);
+      if (remnantRes.rows.length > 0 && remnantRes.rows[0].geometry) {
+        const geom = remnantRes.rows[0].geometry;
+        sheetPoly = geom.outer.map(pt => ({ x: pt.x, y: pt.y }));
+        sheetPoly.children = (geom.holes || []).map(hole => hole.map(pt => ({ x: pt.x, y: pt.y })));
+      }
+    }
+
+    const conf = configuredSheets[sheetIdx];
+    const sW = conf ? conf.width : sheetWidth;
+    const sH = conf ? conf.height : sheetHeight;
+
+    if (!sheetPoly) {
+      sheetPoly = [
+        { x: 0, y: 0 },
+        { x: sW, y: 0 },
+        { x: sW, y: sH },
+        { x: 0, y: sH }
+      ];
+      sheetPoly.children = [];
+    }
+
+    const stepVal = parseInt(gridStep, 10) || 25;
+
+    for (const candidate of candidates) {
+      const limit = limits && limits[candidate.partId] !== undefined ? parseInt(limits[candidate.partId], 10) : Infinity;
+
+      for (let y = 10; y < sH - 10; y += stepVal) {
+        for (let x = 10; x < sW - 10; x += stepVal) {
+          if (placedCount[candidate.partId] >= limit) {
+            break;
+          }
+
+          for (const rot of rotations) {
+            const rotVal = parseInt(rot, 10) || 0;
+            const candRotated = rotatePolygon(candidate.geometry.originalPoints || candidate.geometry, rotVal);
+            let minPX = Infinity, maxPX = -Infinity, minPY = Infinity, maxPY = -Infinity;
+            candRotated.forEach(pt => {
+              const sx = pt.x + x;
+              const sy = pt.y + y;
+              if (sx < minPX) minPX = sx;
+              if (sx > maxPX) maxPX = sx;
+              if (sy < minPY) minPY = sy;
+              if (sy > maxPY) maxPY = sy;
+            });
+
+            if (minPX < 0 || maxPX > sW || minPY < 0 || maxPY > sH) continue;
+
+            const candShifted = shiftPolygon(candRotated, { x, y });
+
+            const isOutside = hasMaterialOutsideSheet(candShifted, sheetPoly, config);
+            if (isOutside) continue;
+
+            let hasCollision = false;
+            for (const p of currentPlacements) {
+              if ((p.sheetId || 0) !== sheetIdx) continue;
+
+              const otherOrigPart = partsToNest.find(op => op.partId === p.partId) || partsToNest.find(op => op.filename === p.filename);
+              if (!otherOrigPart) continue;
+
+              const otherRotated = rotatePolygon(otherOrigPart.originalPoints || otherOrigPart, p.rotation);
+              const otherShifted = shiftPolygon(otherRotated, { x: p.x, y: p.y });
+
+              if (hasMaterialOverlap(candShifted, otherShifted, config)) {
+                hasCollision = true;
+                break;
+              }
+            }
+
+            if (!hasCollision) {
+              maxId++;
+              const newPlacement = {
+                id: maxId,
+                filename: candidate.filename,
+                partId: candidate.partId,
+                x: x,
+                y: y,
+                rotation: rotVal,
+                sheetId: sheetIdx,
+                source: 'manual',
+                subSource: 'intelligent-fill',
+                isDuplicate: true
+              };
+              currentPlacements.push(newPlacement);
+              placedCount[candidate.partId]++;
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return currentPlacements;
+};
+
 module.exports = {
   runDeepnestNext,
   runDeepnestNextInWorker,
@@ -2878,5 +3541,10 @@ module.exports = {
   rotatePolygon,
   shiftPolygon,
   groupPolygonsByHierarchy,
-  mergeSegments
+  mergeSegments,
+  getOuterArea,
+  getTrueArea,
+  getUsedSheetsAreaForJob,
+  getAverageUtilization,
+  calculateIntelligentFill
 };

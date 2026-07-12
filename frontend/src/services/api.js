@@ -85,8 +85,8 @@ export const api = {
   },
 
   // Nesting Jobs
-  startNestingJob: async (projectId, optimizationLevel = 'greedy', sheetWidth = 1000, sheetHeight = 1000, remnantId = null, nestingMode = 'multi', operatorName = null, operatorEmail = null) => {
-    const response = await apiClient.post(`/nesting/start/${projectId}`, { optimizationLevel, sheetWidth, sheetHeight, remnantId, nestingMode, operatorName, operatorEmail });
+  startNestingJob: async (projectId, optimizationLevel = 'greedy', sheetWidth = 1000, sheetHeight = 1000, remnantId = null, nestingMode = 'multi', operatorName = null, operatorEmail = null, configuredSheets = null) => {
+    const response = await apiClient.post(`/nesting/start/${projectId}`, { optimizationLevel, sheetWidth, sheetHeight, remnantId, nestingMode, operatorName, operatorEmail, configuredSheets });
     return response.data;
   },
   getJobStatus: async (jobId, progressOnly = false) => {
@@ -156,6 +156,10 @@ export const api = {
   },
   validatePlacement: async (jobId, { candidate, placements }) => {
     const response = await apiClient.post(`/nesting/layout/validate/${jobId}`, { candidate, placements });
+    return response.data;
+  },
+  intelligentFill: async (jobId, { placements, partsToDuplicate, limits, gridStep, rotations }) => {
+    const response = await apiClient.post(`/nesting/layout/intelligent-fill/${jobId}`, { placements, partsToDuplicate, limits, gridStep, rotations });
     return response.data;
   },
 

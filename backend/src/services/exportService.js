@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const { pool } = require('../config/database');
 const costingService = require('./costingService');
+const nestingService = require('./nestingService');
+
 const { DOMParser } = require('@xmldom/xmldom');
 const PDFDocument = require('pdfkit');
 const sharp = require('sharp');
@@ -96,14 +98,37 @@ const exportPDF = async (jobId, res, req = null, advisorEnabled = true) => {
     const sheetHeight = job.sheet_height || 1000;
     const utilization = job.utilization !== null ? parseFloat(job.utilization) : 0.0;
 
+    let numSheets = 1;
+    let netUtilization = null;
+    const jsonPath = job.output_file ? path.join(__dirname, '../', job.output_file.replace('.svg', '.json')) : null;
+    if (jsonPath && fs.existsSync(jsonPath)) {
+      try {
+        const layoutData = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+        if (layoutData) {
+          if (layoutData.placements) {
+            numSheets = layoutData.placements.length;
+          }
+          if (layoutData.statistics && layoutData.statistics.netUtilization !== undefined) {
+            netUtilization = parseFloat(layoutData.statistics.netUtilization);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to parse layout JSON in exportPDF:', err.message);
+      }
+    }
+
+    const totalUsedSheetArea = await nestingService.getUsedSheetsAreaForJob(job, numSheets, pool);
+
     // Fetch dynamic costing details
     const cost = costingService.calculateCost(
       job.material_type,
       job.material_thickness !== null ? parseFloat(job.material_thickness) : 0.0,
       sheetWidth,
       sheetHeight,
-      utilization
+      netUtilization !== null ? netUtilization : utilization,
+      totalUsedSheetArea
     );
+
 
     const getLayoutMetrics = (stratData) => {
       if (!stratData) return null;
@@ -973,13 +998,23 @@ const exportJSON = async (jobId, res) => {
     const sheetHeight = job.sheet_height || 1000;
     const utilization = job.utilization !== null ? parseFloat(job.utilization) : 0.0;
 
+    const numSheets = (layoutObj && layoutObj.placements) ? layoutObj.placements.length : 1;
+    const totalUsedSheetArea = await nestingService.getUsedSheetsAreaForJob(job, numSheets, pool);
+
+    let netUtilization = null;
+    if (layoutObj && layoutObj.statistics && layoutObj.statistics.netUtilization !== undefined) {
+      netUtilization = parseFloat(layoutObj.statistics.netUtilization);
+    }
+
     const cost = costingService.calculateCost(
       job.material_type,
       job.material_thickness !== null ? parseFloat(job.material_thickness) : 0.0,
       sheetWidth,
       sheetHeight,
-      utilization
+      netUtilization !== null ? netUtilization : utilization,
+      totalUsedSheetArea
     );
+
 
     const isManual = layoutObj.isManual === true;
 

@@ -31,6 +31,12 @@ const testConnection = async () => {
       ALTER TABLE nest_jobs ADD COLUMN IF NOT EXISTS finalized BOOLEAN DEFAULT FALSE
     `);
     console.log('nest_jobs.finalized column verified/created.');
+
+    // Add configured_sheets column to nest_jobs if not exists
+    await pool.query(`
+      ALTER TABLE nest_jobs ADD COLUMN IF NOT EXISTS configured_sheets JSONB
+    `);
+    console.log('nest_jobs.configured_sheets column verified/created.');
   } catch (err) {
     console.error('PostgreSQL Connection/Seeding Error:');
     console.error(err.message);

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Box, Typography, Paper, Divider } from '@mui/material';
+import { Box, Typography, Paper, Divider, LinearProgress } from '@mui/material';
 
 export default function Statistics({
   sheetWidth = 1000,
@@ -17,7 +17,10 @@ export default function Statistics({
   totalParts = 0,
   placedParts = 0,
   weight = 0,
-  materialCost = 0
+  materialCost = 0,
+  overallUtilization = null,
+  sheetwiseUtilizations = [],
+  averageSheetUtilization = null
 }) {
   const formatArea = (areaSqMm) => {
     const area = parseFloat(areaSqMm || 0);
@@ -63,14 +66,71 @@ export default function Statistics({
         }}
       >
         <Typography variant="subtitle2" sx={{ color: '#0d9488', fontWeight: 700, textTransform: 'uppercase', mb: 1 }}>
-          Sheet Utilization
+          Overall Material Utilization
         </Typography>
         <Typography variant="h2" sx={{ color: '#ffffff', fontWeight: 900, mb: 1 }}>
-          {utilization !== null ? `${utilization.toFixed(2)}%` : '0.00%'}
+          {overallUtilization !== null ? `${overallUtilization.toFixed(2)}%` : (utilization !== null ? `${utilization.toFixed(2)}%` : '0.00%')}
         </Typography>
-        <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 500 }}>
-          Active material footprint placed on sheet layout
+        <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 500, display: 'block', mb: 2 }}>
+          Weighted engineering metric based on true total placed part area vs total usable sheet area
         </Typography>
+
+        <Divider sx={{ borderColor: 'rgba(255, 255, 255, 0.08)', my: 2 }} />
+
+        <Typography variant="subtitle2" sx={{ color: '#06b6d4', fontWeight: 700, textTransform: 'uppercase', mb: 1 }}>
+          Average Sheet Utilization
+        </Typography>
+        <Typography variant="h3" sx={{ color: '#ffffff', fontWeight: 800, mb: 1 }}>
+          {(() => {
+            const resolvedAverageSheetUtil = averageSheetUtilization !== null 
+              ? averageSheetUtilization 
+              : (sheetwiseUtilizations && sheetwiseUtilizations.length > 0 
+                  ? (sheetwiseUtilizations.reduce((s, u) => s + u, 0) / sheetwiseUtilizations.length) 
+                  : (overallUtilization !== null ? overallUtilization : (utilization !== null ? utilization : 0)));
+            return `${resolvedAverageSheetUtil.toFixed(2)}%`;
+          })()}
+        </Typography>
+        <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 500, display: 'block', mb: 2 }}>
+          Arithmetic mean of individual sheet utilization percentages
+        </Typography>
+
+        <Divider sx={{ borderColor: 'rgba(255, 255, 255, 0.08)', my: 2 }} />
+
+        <Typography variant="subtitle2" sx={{ color: '#a9b1d6', fontWeight: 700, textTransform: 'uppercase', fontSize: '0.75rem', mb: 2 }}>
+          Sheet-wise Utilization
+        </Typography>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {(() => {
+            const resolvedSheets = sheetwiseUtilizations && sheetwiseUtilizations.length > 0
+              ? sheetwiseUtilizations
+              : [overallUtilization !== null ? overallUtilization : (utilization !== null ? utilization : 0)];
+            return resolvedSheets.map((util, idx) => (
+              <Box key={idx}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 0.5 }}>
+                  <Typography variant="body2" sx={{ color: '#a9b1d6', fontSize: '0.85rem', fontWeight: 500 }}>
+                    Sheet {idx + 1}
+                  </Typography>
+                  <Typography variant="body2" sx={{ color: '#06b6d4', fontWeight: 800, fontSize: '0.85rem' }}>
+                    {util.toFixed(2)}%
+                  </Typography>
+                </Box>
+                <LinearProgress 
+                  variant="determinate" 
+                  value={Math.min(100, Math.max(0, util))} 
+                  sx={{
+                    height: 6,
+                    borderRadius: 3,
+                    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                    '& .MuiLinearProgress-bar': {
+                      backgroundColor: '#06b6d4',
+                      borderRadius: 3
+                    }
+                  }}
+                />
+              </Box>
+            ));
+          })()}
+        </Box>
       </Paper>
 
       {/* Nesting Summary Panel */}

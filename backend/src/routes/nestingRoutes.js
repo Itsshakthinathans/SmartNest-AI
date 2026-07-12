@@ -26,7 +26,10 @@ router.post('/regenerate/:jobId', nestingController.regenerateLayout);
 // 8. Validate Layout Placement
 router.post('/layout/validate/:jobId', nestingController.validateLayoutPlacement);
 
-// 9. Finalize Layout
+// 9. Intelligent Fill
+router.post('/layout/intelligent-fill/:jobId', nestingController.intelligentFill);
+
+// 10. Finalize Layout
 router.post('/finalize/:jobId', nestingController.finalizeLayout);
 
 module.exports = router;

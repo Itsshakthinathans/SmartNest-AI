@@ -18,7 +18,7 @@ function getMaterialConfig(materialType) {
   return MATERIAL_MASTER['Mild Steel'];
 }
 
-function calculateCost(materialType, thicknessMm, sheetWidthMm, sheetHeightMm, utilizationPercent) {
+function calculateCost(materialType, thicknessMm, sheetWidthMm, sheetHeightMm, utilizationPercent, customSheetArea = null) {
   const { density, rate } = getMaterialConfig(materialType);
   const thickness = parseFloat(thicknessMm) || 0.0;
   const sheetWidth = parseFloat(sheetWidthMm) || 0.0;
@@ -26,7 +26,7 @@ function calculateCost(materialType, thicknessMm, sheetWidthMm, sheetHeightMm, u
   const utilization = parseFloat(utilizationPercent) || 0.0;
 
   // Area in mm²
-  const sheetArea = sheetWidth * sheetHeight;
+  const sheetArea = customSheetArea !== null ? parseFloat(customSheetArea) : (sheetWidth * sheetHeight);
   const usedArea = sheetArea * (utilization / 100);
   const wasteArea = sheetArea - usedArea;
 

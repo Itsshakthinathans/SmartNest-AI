@@ -56,6 +56,7 @@ export default function Sheets() {
 
   // Dialog States
   const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [customSizeMode, setCustomSizeMode] = useState(false);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [clearDialogOpen, setClearDialogOpen] = useState(false);
@@ -188,9 +189,14 @@ export default function Sheets() {
       alert('All fields must be filled out to meet inventory audit constraints.');
       return;
     }
+    if (customSizeMode && (addForm.width <= 0 || addForm.height <= 0)) {
+      alert('Custom width and height must be positive numbers.');
+      return;
+    }
     try {
       await api.addSheet(addForm);
       setAddDialogOpen(false);
+      setCustomSizeMode(false);
       setAddForm({
         width: 1000,
         height: 1000,
@@ -254,10 +260,10 @@ export default function Sheets() {
       <Box sx={{ mb: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
         <Box>
           <Typography variant="h4" sx={{ fontWeight: 800, color: '#ffffff' }}>
-            Sheets Stock & History
+            Material Inventory & History
           </Typography>
           <Typography variant="subtitle2" sx={{ color: '#565f89' }}>
-            Manage standard sheet metal dimensions, audit logs, and material consumption records.
+            Manage standard material dimensions, audit logs, and material consumption records.
           </Typography>
         </Box>
         {activeTab === 'inventory' && (
@@ -277,7 +283,7 @@ export default function Sheets() {
               }
             }}
           >
-            Add Sheet Stock
+            Add Material Stock
           </Button>
         )}
       </Box>
@@ -311,8 +317,8 @@ export default function Sheets() {
             }
           }}
         >
-          <Tab icon={<SheetsIcon fontSize="small" />} iconPosition="start" label="Sheets Inventory" value="inventory" />
-          <Tab icon={<HistoryIcon fontSize="small" />} iconPosition="start" label="Sheet Consumption History" value="consumption" />
+          <Tab icon={<SheetsIcon fontSize="small" />} iconPosition="start" label="Material Stock Inventory" value="inventory" />
+          <Tab icon={<HistoryIcon fontSize="small" />} iconPosition="start" label="Material Consumption History" value="consumption" />
           <Tab icon={<InventoryIcon fontSize="small" />} iconPosition="start" label="Remnant Usage History" value="remnants" />
           <Tab icon={<AuditIcon fontSize="small" />} iconPosition="start" label="Inventory Audit Logs" value="audit-logs" />
         </Tabs>
@@ -698,7 +704,7 @@ export default function Sheets() {
       )}
 
       {/* Add Stock Dialog */}
-      <Dialog open={addDialogOpen} onClose={() => setAddDialogOpen(false)} PaperProps={{ sx: { bgcolor: '#0f1319', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '12px' } }}>
+      <Dialog open={addDialogOpen} onClose={() => { setAddDialogOpen(false); setCustomSizeMode(false); }} PaperProps={{ sx: { bgcolor: '#0f1319', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '12px' } }}>
         <form onSubmit={handleAddSubmit}>
           <DialogTitle sx={{ color: '#ffffff', fontWeight: 800 }}>Add Standard Sheet Metal Stock</DialogTitle>
           <DialogContent>
@@ -709,17 +715,23 @@ export default function Sheets() {
                     <InputLabel id="add-sheet-size-label" sx={{ color: '#a9b1d6' }}>Standard Preset Size</InputLabel>
                     <Select
                       labelId="add-sheet-size-label"
-                      value={`${addForm.width}x${addForm.height}`}
+                      value={customSizeMode ? 'custom' : `${addForm.width}x${addForm.height}`}
                       label="Standard Preset Size"
                       onChange={(e) => {
-                        const [w, h] = e.target.value.split('x').map(Number);
-                        setAddForm({ ...addForm, width: w, height: h });
+                        if (e.target.value === 'custom') {
+                          setCustomSizeMode(true);
+                        } else {
+                          setCustomSizeMode(false);
+                          const [w, h] = e.target.value.split('x').map(Number);
+                          setAddForm({ ...addForm, width: w, height: h });
+                        }
                       }}
                       sx={{ color: '#ffffff', '.MuiOutlinedInput-notchedOutline': { borderColor: 'rgba(255,255,255,0.1)' } }}
                     >
                       <MenuItem value="1000x1000">1000 x 1000 mm</MenuItem>
                       <MenuItem value="2000x1000">2000 x 1000 mm</MenuItem>
                       <MenuItem value="3000x1500">3000 x 1500 mm</MenuItem>
+                      <MenuItem value="custom">Custom Size...</MenuItem>
                     </Select>
                   </FormControl>
                 </Grid>
@@ -742,6 +754,35 @@ export default function Sheets() {
                   </FormControl>
                 </Grid>
               </Grid>
+
+              {customSizeMode && (
+                <Grid container spacing={2}>
+                  <Grid item xs={6}>
+                    <TextField
+                      label="Custom Width (mm)"
+                      type="number"
+                      size="small"
+                      value={addForm.width}
+                      onChange={(e) => setAddForm({ ...addForm, width: parseInt(e.target.value, 10) || 0 })}
+                      slotProps={{ htmlInput: { min: "1" } }}
+                      fullWidth
+                      sx={{ '& .MuiOutlinedInput-root fieldset': { borderColor: 'rgba(255,255,255,0.1)' } }}
+                    />
+                  </Grid>
+                  <Grid item xs={6}>
+                    <TextField
+                      label="Custom Height (mm)"
+                      type="number"
+                      size="small"
+                      value={addForm.height}
+                      onChange={(e) => setAddForm({ ...addForm, height: parseInt(e.target.value, 10) || 0 })}
+                      slotProps={{ htmlInput: { min: "1" } }}
+                      fullWidth
+                      sx={{ '& .MuiOutlinedInput-root fieldset': { borderColor: 'rgba(255,255,255,0.1)' } }}
+                    />
+                  </Grid>
+                </Grid>
+              )}
 
               <Grid container spacing={2}>
                 <Grid item xs={6}>

@@ -24,6 +24,8 @@ import {
   Dialog,
   DialogTitle,
   DialogContent,
+  DialogActions,
+  Checkbox,
 } from '@mui/material';
 import {
   ArrowBack as BackIcon,
@@ -142,7 +144,36 @@ const parseSinglePartSvg = (svgText) => {
 };
 
 
+if (typeof window !== 'undefined' && !window.__instrumented) {
+  window.__instrumented = true;
+  
+  const origScrollTo = window.scrollTo;
+  window.scrollTo = function(...args) {
+    console.log('[DEBUG] window.scrollTo called with:', args, new Error().stack);
+    return origScrollTo.apply(this, args);
+  };
+
+  const origScrollIntoView = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = function(...args) {
+    console.log('[DEBUG] element.scrollIntoView called on:', this, 'with:', args, new Error().stack);
+    return origScrollIntoView.apply(this, args);
+  };
+
+  const origFocus = HTMLElement.prototype.focus;
+  HTMLElement.prototype.focus = function(...args) {
+    console.log('[DEBUG] element.focus called on:', this, 'with:', args, new Error().stack);
+    return origFocus.apply(this, args);
+  };
+
+  const origBlur = HTMLElement.prototype.blur;
+  HTMLElement.prototype.blur = function(...args) {
+    console.log('[DEBUG] element.blur called on:', this, 'with:', args, new Error().stack);
+    return origBlur.apply(this, args);
+  };
+}
+
 export default function Result() {
+  console.log('[DEBUG] Result component rendered!');
   const { jobId } = useParams();
   const navigate = useNavigate();
   const pollTimerRef = useRef(null);
@@ -206,6 +237,7 @@ export default function Result() {
   const [draggingPartId, setDraggingPartId] = useState(null);
   const [dragStartMouse, setDragStartMouse] = useState({ x: 0, y: 0 });
   const [dragStartPartPos, setDragStartPartPos] = useState({ x: 0, y: 0 });
+  const [dragStartPartSheetId, setDragStartPartSheetId] = useState(0);
   const [isDirty, setIsDirty] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
 
@@ -216,37 +248,12 @@ export default function Result() {
   const [future, setFuture] = useState([]);
   const [localPartsBeforeDrag, setLocalPartsBeforeDrag] = useState([]);
 
-  // Keyboard controls listener
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (e.key === 'Escape') {
-        if (selectedLibraryPart) {
-          setSelectedLibraryPart(null);
-        }
-      }
-      if (e.key === 'r' || e.key === 'R') {
-        if (selectedLibraryPart) {
-          setSelectedLibraryPart(prev => {
-            if (!prev) return null;
-            return {
-              ...prev,
-              rotation: ((prev.rotation || 0) + 90) % 360
-            };
-          });
-        }
-      }
-      if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) {
-          return;
-        }
-        if (selectedPartId !== null) {
-          handleDeletePart(selectedPartId);
-        }
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedLibraryPart, selectedPartId, localParts]);
+  // Intelligent Fill states
+  const [isFillDialogOpen, setIsFillDialogOpen] = useState(false);
+  const [fillSelectedParts, setFillSelectedParts] = useState({});
+  const [fillLimits, setFillLimits] = useState({});
+  const [fillGridStep, setFillGridStep] = useState(25);
+  const [fillRunning, setFillRunning] = useState(false);
 
   // Preview options
   const [showLabels, setShowLabels] = useState(false);
@@ -256,7 +263,31 @@ export default function Result() {
   const [sheetY, setSheetY] = useState(10);
   const [sheetWidth, setSheetWidth] = useState(1000);
   const [sheetHeight, setSheetHeight] = useState(1000);
+  const [configuredSheets, setConfiguredSheets] = useState([]);
   const [sheetGeometry, setSheetGeometry] = useState(null);
+
+  const getSheetYOffset = (sheetIdx) => {
+    let offset = 0;
+    for (let i = 0; i < sheetIdx; i++) {
+      const conf = (configuredSheets && configuredSheets[i]) || (configuredSheets && configuredSheets[configuredSheets.length - 1]);
+      offset += conf ? conf.height : sheetHeight;
+    }
+    return offset + sheetIdx * 50;
+  };
+
+  const getSheetIndexFromY = (canvasY) => {
+    let currentY = sheetY;
+    const numSheets = configuredSheets.length > 0 ? configuredSheets.length : Math.max(1, ...localParts.map(p => (p.sheetId || 0) + 1));
+    for (let i = 0; i < numSheets; i++) {
+      const conf = (configuredSheets && configuredSheets[i]) || (configuredSheets && configuredSheets[configuredSheets.length - 1]);
+      const sH = conf ? conf.height : sheetHeight;
+      if (canvasY >= currentY && canvasY <= currentY + sH + 50) {
+        return i;
+      }
+      currentY += sH + 50;
+    }
+    return 0;
+  };
   
   // Interactive view state
   const [zoom, setZoom] = useState(1);
@@ -375,7 +406,7 @@ export default function Result() {
 
   // Initialize AI Copilot Welcome Message
   useEffect(() => {
-    if (result) {
+    if (result && chatMessages.length === 0) {
       setChatMessages([
         {
           sender: 'copilot',
@@ -383,7 +414,7 @@ export default function Result() {
         }
       ]);
     }
-  }, [result]);
+  }, [result, chatMessages.length]);
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -493,6 +524,7 @@ export default function Result() {
       const polyEls = Array.from(doc.querySelectorAll('polygon'));
       const pathEls = Array.from(doc.querySelectorAll('path'));
       const textEls = Array.from(doc.querySelectorAll('text'));
+      const partTextEls = textEls.filter(el => el.textContent.trim().startsWith('Part '));
       
       const polys = [];
 
@@ -520,7 +552,7 @@ export default function Result() {
         
         const dStr = `M ${points.map(p => `${p.x} ${p.y}`).join(' L ')} Z`;
         
-        const labelText = textEls[idx + 1] ? textEls[idx + 1].textContent : `Part ${idx + 1}`;
+        const labelText = partTextEls[idx] ? partTextEls[idx].textContent : `Part ${idx + 1}`;
         const polyId = parseInt(labelText.replace('Part ', ''), 10) || (idx + 1);
         polys.push({
           id: polyId,
@@ -576,9 +608,9 @@ export default function Result() {
         const w = maxX - minX;
         const h = maxY - minY;
 
-        const labelIdx = polyEls.length + idx + 1;
+        const labelIdx = polyEls.length + idx;
         
-        const labelText = textEls[labelIdx] ? textEls[labelIdx].textContent : `Part ${polyEls.length + idx + 1}`;
+        const labelText = partTextEls[labelIdx] ? partTextEls[labelIdx].textContent : `Part ${polyEls.length + idx + 1}`;
         const pathId = parseInt(labelText.replace('Part ', ''), 10) || (polyEls.length + idx + 1);
         polys.push({
           id: pathId,
@@ -688,6 +720,7 @@ export default function Result() {
 
   const handlePartMouseDown = (e, partId) => {
     if (!isEditMode) return;
+    console.log('[DEBUG] handlePartMouseDown called for partId:', partId);
     e.stopPropagation();
     setSelectedPartId(partId);
     setDraggingPartId(partId);
@@ -696,11 +729,13 @@ export default function Result() {
     const part = localParts.find(p => p.id === partId);
     if (part) {
       setDragStartPartPos({ x: part.x, y: part.y });
+      setDragStartPartSheetId(part.sheetId || 0);
       setLocalPartsBeforeDrag(localParts);
     }
   };
 
   const handleTranslatePart = (partId, dx, dy) => {
+    console.log('[DEBUG] handleTranslatePart called for partId:', partId, 'dx/dy:', { dx, dy });
     setPast(prev => [...prev, localParts]);
     setFuture([]);
     setIsDirty(true);
@@ -724,43 +759,14 @@ export default function Result() {
     setFuture([]);
     setIsDirty(true);
 
-    const poly = parsedPolygons.find(py => py.id === partId);
-    if (!poly) {
-      // For manually placed parts, rotate around its centroid
-      let nextRot = (part.rotation + deltaDegrees) % 360;
-      if (nextRot < 0) nextRot += 360;
-      setLocalParts(prevParts => prevParts.map(p => {
-        if (p.id === partId) {
-          return { ...p, rotation: nextRot };
-        }
-        return p;
-      }));
-      return;
-    }
-
-    const rotationRad = part.rotation * Math.PI / 180;
-    const nestedCentroidX = poly.centroidX;
-    const nestedCentroidY = poly.centroidY;
-
-    const dx = nestedCentroidX - part.x;
-    const dy = nestedCentroidY - part.y;
-    const cx0 = dx * Math.cos(-rotationRad) - dy * Math.sin(-rotationRad);
-    const cy0 = dx * Math.sin(-rotationRad) + dy * Math.cos(-rotationRad);
-
     let nextRotation = (part.rotation + deltaDegrees) % 360;
     if (nextRotation < 0) nextRotation += 360;
-    const nextRotationRad = nextRotation * Math.PI / 180;
-
-    const nextX = nestedCentroidX - (cx0 * Math.cos(nextRotationRad) - cy0 * Math.sin(nextRotationRad));
-    const nextY = nestedCentroidY - (cx0 * Math.sin(nextRotationRad) + cy0 * Math.cos(nextRotationRad));
 
     setLocalParts(prevParts => prevParts.map(p => {
       if (p.id === partId) {
         return {
           ...p,
-          rotation: nextRotation,
-          x: nextX,
-          y: nextY
+          rotation: nextRotation
         };
       }
       return p;
@@ -813,7 +819,7 @@ export default function Result() {
         filename: selectedLibraryPart.file_name,
         partId: selectedLibraryPart.id,
         source: 'manual',
-        sheetId: 0,
+        sheetId: coords.sheetId !== undefined ? coords.sheetId : 0,
         x: coords.x,
         y: coords.y,
         rotation: selectedLibraryPart.rotation || 0
@@ -913,17 +919,24 @@ export default function Result() {
     }
   };
 
-  const handleMovePart = (partId, nextX, nextY) => {
+  const handleMovePart = (partId, nextX, nextY, sheetId) => {
+    console.log('[DEBUG] handleMovePart called for partId:', partId, 'coords:', { nextX, nextY, sheetId });
     setIsDirty(true);
     setLocalParts(prev => prev.map(p => {
       if (p.id === partId) {
-        return { ...p, x: nextX, y: nextY };
+        return { 
+          ...p, 
+          x: nextX, 
+          y: nextY,
+          sheetId: sheetId !== undefined ? sheetId : p.sheetId
+        };
       }
       return p;
     }));
   };
 
   const handleDragEnd = async (partId) => {
+    console.log('[DEBUG] handleDragEnd called for partId:', partId);
     const part = localParts.find(p => p.id === partId);
     if (!part) return;
 
@@ -1031,8 +1044,140 @@ export default function Result() {
   };
 
   const handleSelectPlacement = (pId) => {
+    console.log('[DEBUG] handleSelectPlacement called with pId:', pId);
     setSelectedPartId(pId);
     setLocalPartsBeforeDrag(localParts);
+  };
+
+  const openIntelligentFillDialog = () => {
+    const initialSelected = {};
+    const initialLimits = {};
+    projectFiles.forEach(f => {
+      initialSelected[f.id] = true;
+      initialLimits[f.id] = '';
+    });
+    setFillSelectedParts(initialSelected);
+    setFillLimits(initialLimits);
+    setFillGridStep(25);
+    setIsFillDialogOpen(true);
+  };
+
+  const handleRunIntelligentFill = async () => {
+    const partsToDuplicate = Object.keys(fillSelectedParts)
+      .filter(k => fillSelectedParts[k])
+      .map(k => parseInt(k, 10));
+
+    if (partsToDuplicate.length === 0) {
+      alert('Please select at least one part type to duplicate.');
+      return;
+    }
+
+    const stepVal = parseInt(fillGridStep, 10);
+    if (isNaN(stepVal) || stepVal < 5 || stepVal > 200) {
+      alert('Please enter a grid step resolution between 5 and 200 mm.');
+      return;
+    }
+
+    const limits = {};
+    partsToDuplicate.forEach(pId => {
+      const limitVal = fillLimits[pId];
+      if (limitVal !== undefined && String(limitVal).trim() !== '') {
+        const num = parseInt(limitVal, 10);
+        if (!isNaN(num) && num >= 0) {
+          limits[pId] = num;
+        }
+      }
+    });
+
+    try {
+      setFillRunning(true);
+      const res = await api.intelligentFill(jobId, {
+        placements: localParts,
+        partsToDuplicate,
+        limits,
+        gridStep: stepVal
+      });
+
+      if (res && res.success) {
+        const updatedPlacements = await Promise.all(res.placements.map(async (p) => {
+          const existing = localParts.find(lp => lp.id === p.id);
+          if (existing) {
+            return {
+              ...p,
+              geometry: existing.geometry,
+              holes: existing.holes,
+              centroid: existing.centroid,
+              boundingBox: existing.boundingBox,
+              originalX: existing.originalX !== undefined ? existing.originalX : p.x,
+              originalY: existing.originalY !== undefined ? existing.originalY : p.y,
+              originalRotation: existing.originalRotation !== undefined ? existing.originalRotation : p.rotation,
+              originalSheetId: existing.originalSheetId !== undefined ? existing.originalSheetId : p.sheetId
+            };
+          }
+          
+          const fileMatch = projectFiles.find(f => f.id === p.partId || f.file_name === p.filename);
+          if (fileMatch) {
+            try {
+              const geomRes = await api.getFileGeometry(fileMatch.id);
+              if (geomRes && geomRes.success) {
+                return {
+                  ...p,
+                  originalX: p.x,
+                  originalY: p.y,
+                  originalRotation: p.rotation,
+                  originalSheetId: p.sheetId || 0,
+                  geometry: geomRes.geometry,
+                  holes: geomRes.holes,
+                  centroid: geomRes.centroid,
+                  boundingBox: geomRes.boundingBox
+                };
+              }
+            } catch (geomErr) {
+              console.error('Failed to load geometry for Intelligent Fill part:', geomErr);
+            }
+          }
+          return p;
+        }));
+
+        const payloadParts = updatedPlacements.map(p => ({
+          id: p.id,
+          filename: p.filename,
+          x: p.x,
+          y: p.y,
+          rotation: p.rotation,
+          partId: p.partId ? parseInt(p.partId, 10) : null,
+          sheetId: p.sheetId ? parseInt(p.sheetId, 10) : 0,
+          source: p.source === 'manual' ? 'manual' : 'deepnest'
+        }));
+
+        let strategyQuery = '';
+        if (result?.nestingMode === 'multi') {
+          if (selectedLayout === 'layout1') strategyQuery = 'a';
+          else if (selectedLayout === 'layout2') strategyQuery = 'b';
+          else if (selectedLayout === 'layout3') strategyQuery = 'c';
+        }
+
+        try {
+          await api.updateLayoutPlacements(jobId, payloadParts, strategyQuery);
+          await fetchResult();
+          setPast(prev => [...prev, localParts]);
+          setLocalParts(updatedPlacements);
+          setFuture([]);
+          setIsDirty(false);
+          setIsFillDialogOpen(false);
+        } catch (saveErr) {
+          console.error('Failed to auto-save after Intelligent Fill:', saveErr);
+          alert('Failed to persist Intelligent Fill placements: ' + (saveErr.response?.data?.message || saveErr.message));
+        }
+      } else {
+        alert('Intelligent Fill calculation failed: ' + (res.message || 'Unknown error'));
+      }
+    } catch (err) {
+      console.error('Error running Intelligent Fill:', err);
+      alert('Failed to run Intelligent Fill layout calculations.');
+    } finally {
+      setFillRunning(false);
+    }
   };
 
 
@@ -1123,9 +1268,14 @@ export default function Result() {
 
 
   const fetchResult = async () => {
+    console.log('[DEBUG] fetchResult invoked!');
     try {
       const resData = await api.getJobResult(jobId);
+      console.log('[DEBUG] setResult called with:', resData);
       setResult(resData);
+      if (resData.configuredSheets) {
+        setConfiguredSheets(resData.configuredSheets);
+      }
       
       if (resData.sheetWidth && resData.sheetHeight) {
         setSheetWidth(resData.sheetWidth);
@@ -1222,6 +1372,7 @@ export default function Result() {
               originalX: p.x,
               originalY: p.y,
               originalRotation: p.rotation,
+              originalSheetId: p.sheetId || 0,
               ...extra
             };
           }));
@@ -1261,10 +1412,16 @@ export default function Result() {
       
       setLocalParts(prevParts => prevParts.map(p => {
         if (p.id === draggingPartId) {
+          const initialYOffset = getSheetYOffset(dragStartPartSheetId);
+          const currentAbsoluteY = dragStartPartPos.y + dyModel + sheetY + initialYOffset;
+          const targetSheetId = getSheetIndexFromY(currentAbsoluteY);
+          const targetYOffset = getSheetYOffset(targetSheetId);
+          const nextRelY = dragStartPartPos.y + dyModel + initialYOffset - targetYOffset;
           return {
             ...p,
             x: dragStartPartPos.x + dxModel,
-            y: dragStartPartPos.y + dyModel
+            y: nextRelY,
+            sheetId: targetSheetId
           };
         }
         return p;
@@ -1431,7 +1588,10 @@ export default function Result() {
         <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
           {/* Sheet boundary background */}
           {Array.from({ length: numSheets }).map((_, sheetIdx) => {
-            const yOffset = sheetIdx * (sheetHeight + 50);
+            const conf = (configuredSheets && configuredSheets[sheetIdx]) || (configuredSheets && configuredSheets[configuredSheets.length - 1]);
+            const sW = conf ? conf.width : sheetWidth;
+            const sH = conf ? conf.height : sheetHeight;
+            const yOffset = getSheetYOffset(sheetIdx);
             return sheetGeometry ? (
               <path
                 key={`sheet-boundary-${sheetIdx}`}
@@ -1446,8 +1606,8 @@ export default function Result() {
                 key={`sheet-boundary-${sheetIdx}`}
                 x={sheetX} 
                 y={sheetY + yOffset} 
-                width={sheetWidth} 
-                height={sheetHeight} 
+                width={sW} 
+                height={sH} 
                 fill="#12161f" 
                 stroke="#4f5b66" 
                 strokeWidth="1.5"
@@ -1457,7 +1617,10 @@ export default function Result() {
           
           {/* Grid overlay */}
           {showGrid && Array.from({ length: numSheets }).map((_, sheetIdx) => {
-            const yOffset = sheetIdx * (sheetHeight + 50);
+            const conf = (configuredSheets && configuredSheets[sheetIdx]) || (configuredSheets && configuredSheets[configuredSheets.length - 1]);
+            const sW = conf ? conf.width : sheetWidth;
+            const sH = conf ? conf.height : sheetHeight;
+            const yOffset = getSheetYOffset(sheetIdx);
             return sheetGeometry ? (
               <path
                 key={`sheet-grid-${sheetIdx}`}
@@ -1470,8 +1633,8 @@ export default function Result() {
                 key={`sheet-grid-${sheetIdx}`}
                 x={sheetX} 
                 y={sheetY + yOffset} 
-                width={sheetWidth} 
-                height={sheetHeight} 
+                width={sW} 
+                height={sH} 
                 fill="url(#canvas-grid)" 
               />
             );
@@ -1479,7 +1642,7 @@ export default function Result() {
 
           {/* Sheet Labels */}
           {Array.from({ length: numSheets }).map((_, sheetIdx) => {
-            const yOffset = sheetIdx * (sheetHeight + 50);
+            const yOffset = getSheetYOffset(sheetIdx);
             return (
               <text
                 key={`sheet-label-${sheetIdx}`}
@@ -1519,7 +1682,9 @@ export default function Result() {
 
               if (part) {
                 const dx = part.x - part.originalX;
-                const dy = part.y - part.originalY;
+                const targetYOffset = getSheetYOffset(part.sheetId || 0);
+                const origYOffset = getSheetYOffset(part.originalSheetId !== undefined ? part.originalSheetId : (part.sheetId || 0));
+                const dy = part.y - part.originalY + (targetYOffset - origYOffset);
                 const dRot = part.rotation - part.originalRotation;
                 transformStr = `translate(${dx}, ${dy}) rotate(${dRot}, ${poly.centroidX}, ${poly.centroidY})`;
                 isSelected = selectedPartId === poly.id;
@@ -1588,7 +1753,7 @@ export default function Result() {
               if (!part.geometry || part.geometry.length === 0) return null;
 
               const pathD = getPathData(part.geometry, part.holes);
-              const yOffset = (part.sheetId || 0) * (sheetHeight + 50);
+              const yOffset = getSheetYOffset(part.sheetId || 0);
               const transformStr = `translate(${part.x + sheetX}, ${part.y + sheetY + yOffset}) rotate(${part.rotation})`;
 
               let partFill = 'rgba(187, 154, 247, 0.15)'; // Magenta/Purple translucent
@@ -1822,20 +1987,60 @@ export default function Result() {
         <Grid container spacing={3}>
           {/* Column 1: Parts Library sidebar */}
           <Grid item xs={12} md={3}>
-            <PartsLibrary
-              parts={projectFiles.map(file => {
-                const autoCount = localParts.filter(p => (p.partId === file.id || p.filename === file.file_name) && p.source === 'deepnest').length;
-                const manualCount = localParts.filter(p => (p.partId === file.id || p.filename === file.file_name) && p.source === 'manual').length;
-                return {
-                  ...file,
-                  autoCount,
-                  manualCount,
-                  placedCount: autoCount + manualCount
-                };
-              })}
-              selectedPartId={selectedLibraryPart ? selectedLibraryPart.id : null}
-              onSelectPart={handleSelectLibraryPart}
-            />
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3, height: '100%' }}>
+              <PartsLibrary
+                parts={projectFiles.map(file => {
+                  const autoCount = localParts.filter(p => (p.partId === file.id || p.filename === file.file_name) && p.source === 'deepnest').length;
+                  const manualCount = localParts.filter(p => (p.partId === file.id || p.filename === file.file_name) && p.source === 'manual').length;
+                  return {
+                    ...file,
+                    autoCount,
+                    manualCount,
+                    placedCount: autoCount + manualCount
+                  };
+                })}
+                selectedPartId={selectedLibraryPart ? selectedLibraryPart.id : null}
+                onSelectPart={handleSelectLibraryPart}
+              />
+              
+              {/* Intelligent Fill Control Panel */}
+              <Paper sx={{ p: 2.5, bgcolor: '#0f1319', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '12px' }}>
+                <Typography variant="subtitle2" sx={{ color: '#565f89', fontWeight: 700, textTransform: 'uppercase', mb: 1 }}>
+                  Intelligent Fill
+                </Typography>
+                <Typography variant="caption" sx={{ color: '#a9b1d6', display: 'block', mb: 2 }}>
+                  Maximize material utilization by automatically packing remaining empty sheet space with extra part duplicates.
+                </Typography>
+                <Button
+                  variant="contained"
+                  fullWidth
+                  onClick={openIntelligentFillDialog}
+                  disabled={!isEditMode || finalizing || savingLayout}
+                  sx={{
+                    background: 'linear-gradient(135deg, #0d9488 0%, #06b6d4 100%)',
+                    color: '#ffffff',
+                    fontWeight: 700,
+                    textTransform: 'none',
+                    py: 1,
+                    '&:hover': {
+                      background: 'linear-gradient(135deg, #0b7a70 0%, #0594ad 100%)',
+                    },
+                    '&.Mui-disabled': {
+                      background: 'rgba(255,255,255,0.03)',
+                      color: 'rgba(255,255,255,0.25)',
+                      border: '1px solid rgba(255,255,255,0.05)'
+                    }
+                  }}
+                >
+                  ⚡ Intelligent Fill Layout
+                </Button>
+                {!isEditMode && (
+                  <Typography variant="caption" sx={{ color: '#ef4444', fontWeight: 600, display: 'block', mt: 1, textAlign: 'center' }}>
+                    * Enable Manual Adjust mode to fill.
+                  </Typography>
+                )}
+              </Paper>
+            </Box>
           </Grid>
 
           {/* Column 2: Stats & Controls */}
@@ -1855,24 +2060,119 @@ export default function Result() {
               </Paper>
 
               {/* Manufacturing Statistics component */}
-              <Statistics
-                sheetWidth={sheetWidth}
-                sheetHeight={sheetHeight}
-                materialType={result?.materialType}
-                materialThickness={result?.materialThickness}
-                remnantId={result?.remnantId}
-                sheetArea={result?.sheetArea}
-                usedArea={activeUsedArea}
-                remainingArea={activeRemainingArea}
-                remnantValue={activeRemnantValue}
-                cuttingTime={activeCuttingTime}
-                runtime={activeRuntime}
-                utilization={activeUtilization}
-                totalParts={result?.totalParts !== undefined && result?.totalParts !== null ? result.totalParts : parsedPolygons.length}
-                placedParts={activePlacedParts}
-                weight={activeWeight}
-                materialCost={activeMaterialCost}
-              />
+              {(() => {
+                // Retrieve backend-calculated utilizations from statistics object (backend single source of truth)
+                let overallUtil = null;
+                let sheetwiseUtils = null;
+                let averageSheetUtil = null;
+
+                if (result) {
+                  if (result.nestingMode === 'multi' && selectedLayout && result[selectedLayout]) {
+                    const strat = result[selectedLayout];
+                    overallUtil = strat.utilization !== undefined ? parseFloat(strat.utilization) : null;
+                    sheetwiseUtils = strat.sheetwiseUtilizations || null;
+                    averageSheetUtil = strat.averageSheetUtilization !== undefined ? parseFloat(strat.averageSheetUtilization) : null;
+                  } else {
+                    overallUtil = result.utilization !== undefined ? parseFloat(result.utilization) : null;
+                    sheetwiseUtils = result.sheetwiseUtilizations || (result.statistics?.sheetwiseUtilizations) || null;
+                    averageSheetUtil = result.averageSheetUtilization !== undefined ? parseFloat(result.averageSheetUtilization) : (result.statistics?.averageSheetUtilization !== undefined ? parseFloat(result.statistics.averageSheetUtilization) : null);
+                  }
+                }
+
+                // If sheetwiseUtilizations are not returned from backend, fall back to client-side Shoelace calculation
+                if (!sheetwiseUtils) {
+                  let totalSheetArea = 0;
+                  const sheetAreas = [];
+                  for (let i = 0; i < numSheets; i++) {
+                    const conf = (configuredSheets && configuredSheets[i]) || (configuredSheets && configuredSheets[configuredSheets.length - 1]);
+                    const w = conf ? conf.width : sheetWidth;
+                    const h = conf ? conf.height : sheetHeight;
+                    
+                    // Shoelace fallback calculation for sheet 0 if it is a remnant
+                    let area = w * h;
+                    if (i === 0 && sheetGeometry && sheetGeometry.outer) {
+                      const polygonArea = (pts) => {
+                        if (!pts || pts.length < 3) return 0;
+                        let a = 0;
+                        for (let k = 0; k < pts.length; k++) {
+                          const nextK = (k + 1) % pts.length;
+                          a += pts[k].x * pts[nextK].y;
+                          a -= pts[nextK].x * pts[k].y;
+                        }
+                        return Math.abs(a / 2);
+                      };
+                      area = polygonArea(sheetGeometry.outer);
+                      if (sheetGeometry.holes && sheetGeometry.holes.length > 0) {
+                        sheetGeometry.holes.forEach(hole => {
+                          area -= polygonArea(hole);
+                        });
+                      }
+                    }
+                    totalSheetArea += area;
+                    sheetAreas.push(area);
+                  }
+
+                  const totalPartArea = localParts.reduce((sum, p) => {
+                    const fileMatch = projectFiles.find(f => f.id === p.partId || f.file_name === p.filename);
+                    if (fileMatch) return sum + (parseFloat(fileMatch.area || 0));
+                    const polyMatch = parsedPolygons.find(poly => poly.id === p.id);
+                    return sum + (polyMatch ? (polyMatch.area || 0) : 0);
+                  }, 0);
+
+                  overallUtil = totalSheetArea > 0 ? (totalPartArea / totalSheetArea) * 100 : 0;
+
+                  sheetwiseUtils = [];
+                  for (let i = 0; i < numSheets; i++) {
+                    const sheetArea = sheetAreas[i] || (sheetWidth * sheetHeight);
+                    if (sheetArea === 0) {
+                      sheetwiseUtils.push(0);
+                      continue;
+                    }
+                    const partsOnSheet = localParts.filter(p => (p.sheetId || 0) === i);
+                    const partAreaOnSheet = partsOnSheet.reduce((sum, p) => {
+                      const fileMatch = projectFiles.find(f => f.id === p.partId || f.file_name === p.filename);
+                      if (fileMatch) return sum + (parseFloat(fileMatch.area || 0));
+                      const polyMatch = parsedPolygons.find(poly => poly.id === p.id);
+                      return sum + (polyMatch ? (polyMatch.area || 0) : 0);
+                    }, 0);
+                    sheetwiseUtils.push((partAreaOnSheet / sheetArea) * 100);
+                  }
+                }
+
+                if (overallUtil === null) {
+                  overallUtil = activeUtilization;
+                }
+
+                if (averageSheetUtil === null && sheetwiseUtils) {
+                  averageSheetUtil = sheetwiseUtils.length > 0 
+                    ? (sheetwiseUtils.reduce((s, u) => s + u, 0) / sheetwiseUtils.length) 
+                    : overallUtil;
+                }
+
+                return (
+                  <Statistics
+                    sheetWidth={sheetWidth}
+                    sheetHeight={sheetHeight}
+                    materialType={result?.materialType}
+                    materialThickness={result?.materialThickness}
+                    remnantId={result?.remnantId}
+                    sheetArea={result?.sheetArea}
+                    usedArea={activeUsedArea}
+                    remainingArea={activeRemainingArea}
+                    remnantValue={activeRemnantValue}
+                    cuttingTime={activeCuttingTime}
+                    runtime={activeRuntime}
+                    utilization={activeUtilization}
+                    totalParts={result?.totalParts !== undefined && result?.totalParts !== null ? result.totalParts : parsedPolygons.length}
+                    placedParts={activePlacedParts}
+                    weight={activeWeight}
+                    materialCost={activeMaterialCost}
+                    overallUtilization={overallUtil}
+                    sheetwiseUtilizations={sheetwiseUtils}
+                    averageSheetUtilization={averageSheetUtil}
+                  />
+                );
+              })()}
 
               {/* Exports Panel */}
               <Paper sx={{ p: 3, bgcolor: '#0f1319', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '12px' }}>
@@ -2118,6 +2418,7 @@ export default function Result() {
                 <LayoutCanvas
                   sheetWidth={sheetWidth}
                   sheetHeight={sheetHeight}
+                  configuredSheets={configuredSheets}
                   sheetX={sheetX}
                   sheetY={sheetY}
                   placements={localParts}
@@ -2140,6 +2441,11 @@ export default function Result() {
                   sheetGeometry={sheetGeometry}
                   onDragEnd={handleDragEnd}
                   onRotateSelectedLibraryPart={handleRotateSelectedLibraryPart}
+                  onTranslateSelectedPart={handleTranslatePart}
+                  onRotateSelectedPart={handleRotatePart}
+                  onDeleteSelectedPart={handleDeletePart}
+                  onUndo={handleUndo}
+                  onRedo={handleRedo}
                 />
               </Paper>
 
@@ -2949,6 +3255,185 @@ export default function Result() {
             {renderLayoutSvg()}
           </Box>
         </DialogContent>
+      </Dialog>
+
+      {/* Intelligent Fill Optimization Dialog */}
+      <Dialog 
+        open={isFillDialogOpen} 
+        onClose={() => !fillRunning && setIsFillDialogOpen(false)}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{
+          sx: {
+            bgcolor: '#0f1319',
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            borderRadius: '16px',
+            backgroundImage: 'none',
+            color: '#ffffff'
+          }
+        }}
+      >
+        <DialogTitle sx={{ fontWeight: 800, borderBottom: '1px solid rgba(255, 255, 255, 0.06)', pb: 2, display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          <span style={{ color: '#0d9488' }}>⚡</span> Intelligent Fill Layout Optimizer
+        </DialogTitle>
+        <DialogContent sx={{ mt: 2 }}>
+          <Typography variant="body2" sx={{ color: '#a9b1d6', mb: 3 }}>
+            Version 1's First-Fit placement scan searches remaining empty space to place extra duplicates of selected parts. 
+            Existing parts will not be altered.
+          </Typography>
+
+          <Typography variant="subtitle2" sx={{ color: '#565f89', fontWeight: 700, textTransform: 'uppercase', mb: 1.5 }}>
+            1. Select Parts & Limits
+          </Typography>
+
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mb: 4, maxHeight: '250px', overflowY: 'auto', pr: 1 }}>
+            {projectFiles.map(file => {
+              const isChecked = !!fillSelectedParts[file.id];
+              return (
+                <Box 
+                  key={file.id} 
+                  sx={{ 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    justifyContent: 'space-between', 
+                    p: 1.5, 
+                    bgcolor: isChecked ? 'rgba(13, 148, 136, 0.05)' : 'rgba(255, 255, 255, 0.01)', 
+                    border: `1px solid ${isChecked ? 'rgba(13, 148, 136, 0.3)' : 'rgba(255, 255, 255, 0.04)'}`,
+                    borderRadius: '8px'
+                  }}
+                >
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={isChecked}
+                        onChange={(e) => setFillSelectedParts(prev => ({ ...prev, [file.id]: e.target.checked }))}
+                        sx={{
+                          color: 'rgba(255,255,255,0.2)',
+                          '&.Mui-checked': { color: '#0d9488' }
+                        }}
+                      />
+                    }
+                    label={
+                      <Box>
+                        <Typography variant="body2" sx={{ fontWeight: 700, color: '#ffffff' }}>
+                          {file.file_name}
+                        </Typography>
+                        <Typography variant="caption" sx={{ color: '#565f89' }}>
+                          Target Qty: {file.quantity || 1} | Placed: {localParts.filter(p => p.partId === file.id || p.filename === file.file_name).length}
+                        </Typography>
+                      </Box>
+                    }
+                    sx={{ m: 0 }}
+                  />
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Typography variant="caption" sx={{ color: '#a9b1d6' }}>
+                      Limit:
+                    </Typography>
+                    <TextField
+                      size="small"
+                      placeholder="∞"
+                      type="number"
+                      disabled={!isChecked}
+                      value={fillLimits[file.id] || ''}
+                      onChange={(e) => setFillLimits(prev => ({ ...prev, [file.id]: e.target.value }))}
+                      inputProps={{ min: 1, style: { textAlign: 'center', color: '#ffffff', fontSize: '0.85rem' } }}
+                      sx={{ 
+                        width: '70px',
+                        '& .MuiOutlinedInput-root': {
+                          height: '32px',
+                          borderRadius: '6px',
+                          backgroundColor: 'rgba(255,255,255,0.02)',
+                          '& fieldset': { borderColor: 'rgba(255, 255, 255, 0.08)' },
+                          '&:hover fieldset': { borderColor: 'rgba(255, 255, 255, 0.15)' },
+                          '&.Mui-focused fieldset': { borderColor: '#0d9488' }
+                        }
+                      }}
+                    />
+                  </Box>
+                </Box>
+              );
+            })}
+          </Box>
+
+          <Typography variant="subtitle2" sx={{ color: '#565f89', fontWeight: 700, textTransform: 'uppercase', mb: 1.5 }}>
+            2. Configure Search Strategy
+          </Typography>
+
+          <Grid container spacing={2}>
+            <Grid item xs={6}>
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 600 }}>
+                  Scan Resolution (Grid Step in mm)
+                </Typography>
+                <TextField
+                  type="number"
+                  size="small"
+                  value={fillGridStep}
+                  onChange={(e) => setFillGridStep(e.target.value)}
+                  inputProps={{ min: 5, max: 200, style: { color: '#ffffff' } }}
+                  sx={{
+                    '& .MuiOutlinedInput-root': {
+                      borderRadius: '8px',
+                      backgroundColor: 'rgba(255,255,255,0.02)',
+                      '& fieldset': { borderColor: 'rgba(255, 255, 255, 0.08)' },
+                      '&:hover fieldset': { borderColor: 'rgba(255, 255, 255, 0.15)' },
+                      '&.Mui-focused fieldset': { borderColor: '#0d9488' }
+                    }
+                  }}
+                />
+              </Box>
+            </Grid>
+            <Grid item xs={6}>
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                <Typography variant="caption" sx={{ color: '#a9b1d6', fontWeight: 600 }}>
+                  Allowed Rotations
+                </Typography>
+                <TextField
+                  size="small"
+                  disabled
+                  value="[ 0°, 90°, 180°, 270° ]"
+                  sx={{
+                    '& .MuiOutlinedInput-root': {
+                      borderRadius: '8px',
+                      backgroundColor: 'rgba(255,255,255,0.01)',
+                      '& fieldset': { borderColor: 'rgba(255, 255, 255, 0.04)' }
+                    },
+                    '& .MuiInputBase-input.Mui-disabled': {
+                      WebkitTextFillColor: '#565f89',
+                      fontWeight: 600
+                    }
+                  }}
+                />
+              </Box>
+            </Grid>
+          </Grid>
+        </DialogContent>
+        <DialogActions sx={{ p: 3, borderTop: '1px solid rgba(255, 255, 255, 0.06)' }}>
+          <Button 
+            onClick={() => setIsFillDialogOpen(false)} 
+            disabled={fillRunning}
+            sx={{ color: '#a9b1d6', textTransform: 'none', fontWeight: 700 }}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={handleRunIntelligentFill}
+            disabled={fillRunning}
+            sx={{
+              background: 'linear-gradient(135deg, #0d9488 0%, #06b6d4 100%)',
+              color: '#ffffff',
+              fontWeight: 700,
+              textTransform: 'none',
+              px: 3,
+              '&:hover': {
+                background: 'linear-gradient(135deg, #0b7a70 0%, #0594ad 100%)',
+              }
+            }}
+          >
+            {fillRunning ? <CircularProgress size={20} color="inherit" /> : 'Run Intelligent Fill'}
+          </Button>
+        </DialogActions>
       </Dialog>
     </Box>
   );

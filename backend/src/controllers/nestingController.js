@@ -161,7 +161,8 @@ const partitionLeftoverGeometry = async (projectId, materialType, thickness, she
       holes: [],
       width: rwidth,
       height: rheight,
-      area: rarea
+      area: rarea,
+      sheetIndex: region.sheetIndex !== undefined ? region.sheetIndex : 0
     };
     
     const rectValue = calculateRemnantValue(materialType, thickness, rarea);
@@ -206,6 +207,7 @@ const partitionLeftoverGeometry = async (projectId, materialType, thickness, she
   // 3. Insert Scrap pieces
   const scrapPieces = region.scrapPieces || [];
   for (const piece of scrapPieces) {
+    piece.sheetIndex = region.sheetIndex !== undefined ? region.sheetIndex : 0;
     const isPieceReusable = piece.area >= minAreaThreshold && piece.width >= minWidthThreshold && piece.height >= minHeightThreshold;
     if (isPieceReusable) {
       const scrapValue = calculateRemnantValue(materialType, thickness, piece.area);
@@ -293,10 +295,10 @@ const calculateRemnantDimensions = (sheetWidth, sheetHeight, maxX, maxY) => {
 
 const handleInventoryDeduction = async (jobId, projectId, sheetWidth, sheetHeight, remnantId) => {
   try {
-    // 1. Fetch job operator details
-    const jobRes = await pool.query('SELECT operator_name, operator_email FROM nest_jobs WHERE id = $1', [jobId]);
+    // 1. Fetch job operator details and configured sheets configuration
+    const jobRes = await pool.query('SELECT operator_name, operator_email, configured_sheets FROM nest_jobs WHERE id = $1', [jobId]);
     if (jobRes.rows.length === 0) return;
-    const { operator_name: operatorName, operator_email: operatorEmail } = jobRes.rows[0];
+    const { operator_name: operatorName, operator_email: operatorEmail, configured_sheets: configuredSheets } = jobRes.rows[0];
 
     // Deductions only happen if operatorName & operatorEmail are populated (prompted on start)
     if (!operatorName || !operatorEmail) {
@@ -312,15 +314,13 @@ const handleInventoryDeduction = async (jobId, projectId, sheetWidth, sheetHeigh
     const materialType = project.material_type || 'Mild Steel';
     const thickness = parseFloat(project.material_thickness) || 1.00;
 
-    // 3. Process remnant usage
-    if (remnantId) {
-      await inventoryService.recordRemnantUsage(remnantId, projectName, materialType, thickness, operatorName, operatorEmail);
-    } else {
-      // 4. Read output json to calculate standard sheets consumed
+    // 3. Check if configured sheets list is available
+    if (configuredSheets && Array.isArray(configuredSheets) && configuredSheets.length > 0) {
       const path = require('path');
       const fs = require('fs');
       const resultsDir = path.join(__dirname, '../uploads/projects', String(projectId), 'results');
       const jsonPath = path.join(resultsDir, 'nested_output.json');
+      
       if (fs.existsSync(jsonPath)) {
         const layoutData = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
         const placements = [];
@@ -337,10 +337,54 @@ const handleInventoryDeduction = async (jobId, projectId, sheetWidth, sheetHeigh
         }
         const sheetsCount = placements.length > 0 ? Math.max(1, ...placements.map(p => (p.sheetId || 0) + 1)) : 0;
         
-        // Process standard sheet stock deduction
-        await inventoryService.deductSheetsConsumed(projectName, sheetWidth, sheetHeight, materialType, thickness, sheetsCount, operatorName, operatorEmail);
+        console.log(`[InventoryDeduction] Processing dynamic configured sheet deductions for ${sheetsCount} sheets.`);
+        for (let idx = 0; idx < sheetsCount; idx++) {
+          // Fallback to the last sheet configuration if the nesting count exceeds configuration count
+          const conf = configuredSheets[idx] || configuredSheets[configuredSheets.length - 1];
+          if (conf) {
+            if (conf.source === 'remnant' && conf.remnantId) {
+              await pool.query("UPDATE remnants SET status = 'Consumed', used = true WHERE id = $1", [conf.remnantId]);
+              await inventoryService.recordRemnantUsage(conf.remnantId, projectName, materialType, thickness, operatorName, operatorEmail);
+              console.log(`[InventoryDeduction] Deducted remnant ID ${conf.remnantId} for sheet index ${idx}.`);
+            } else if (conf.source === 'stock') {
+              await inventoryService.deductSheetsConsumed(projectName, conf.width, conf.height, materialType, thickness, 1, operatorName, operatorEmail);
+              console.log(`[InventoryDeduction] Deducted standard stock sheet ${conf.width}x${conf.height} for sheet index ${idx}.`);
+            } else {
+              console.log(`[InventoryDeduction] Sheet index ${idx} uses source '${conf.source}' (${conf.width}x${conf.height}). No inventory stock deduction required.`);
+            }
+          }
+        }
       } else {
-        console.warn(`[NestingController] nested_output.json not found for job ${jobId}. Cannot calculate standard sheets consumed.`);
+        console.warn(`[NestingController] nested_output.json not found for job ${jobId}. Cannot calculate dynamic sheets consumed.`);
+      }
+    } else {
+      // Legacy fallback
+      if (remnantId) {
+        await inventoryService.recordRemnantUsage(remnantId, projectName, materialType, thickness, operatorName, operatorEmail);
+      } else {
+        const path = require('path');
+        const fs = require('fs');
+        const resultsDir = path.join(__dirname, '../uploads/projects', String(projectId), 'results');
+        const jsonPath = path.join(resultsDir, 'nested_output.json');
+        if (fs.existsSync(jsonPath)) {
+          const layoutData = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+          const placements = [];
+          if (layoutData.placements && Array.isArray(layoutData.placements)) {
+            layoutData.placements.forEach((sheetPlacement, sheetIdx) => {
+              const sheetPlacements = sheetPlacement.sheetplacements || [];
+              sheetPlacements.forEach(p => {
+                placements.push({
+                  ...p,
+                  sheetId: p.sheetId !== undefined ? p.sheetId : (sheetPlacement.sheetid !== undefined ? sheetPlacement.sheetid : sheetIdx)
+                });
+              });
+            });
+          }
+          const sheetsCount = placements.length > 0 ? Math.max(1, ...placements.map(p => (p.sheetId || 0) + 1)) : 0;
+          await inventoryService.deductSheetsConsumed(projectName, sheetWidth, sheetHeight, materialType, thickness, sheetsCount, operatorName, operatorEmail);
+        } else {
+          console.warn(`[NestingController] nested_output.json not found for legacy job ${jobId}.`);
+        }
       }
     }
   } catch (err) {
@@ -351,6 +395,9 @@ const handleInventoryDeduction = async (jobId, projectId, sheetWidth, sheetHeigh
 // Helper to run nesting in the background
 const runNestingInBackground = async (jobId, files, projectId, optimizationLevel, sheetWidth, sheetHeight, remnantId, isRegenerate = false, nestingMode = 'multi') => {
   try {
+    const jobConfigRes = await pool.query('SELECT configured_sheets FROM nest_jobs WHERE id = $1', [jobId]);
+    const configuredSheets = jobConfigRes.rows[0]?.configured_sheets || null;
+
     if (remnantId) {
       await pool.query("UPDATE remnants SET status = 'Reserved' WHERE id = $1", [remnantId]);
     }
@@ -402,10 +449,13 @@ const runNestingInBackground = async (jobId, files, projectId, optimizationLevel
           }
         };
 
-        const result = await nestingService.runDeepnestNextInWorker(files, projectId, runLevel, sheetWidth, sheetHeight, strat, onProgress, remnantId);
+        const result = await nestingService.runDeepnestNextInWorker(files, projectId, runLevel, sheetWidth, sheetHeight, strat, onProgress, remnantId, configuredSheets);
         const stratRuntime = Date.now() - stratStart;
 
-        const cost = costingService.calculateCost(materialType, thickness, sheetWidth, sheetHeight, result.utilization);
+        const numSheets = result.placements && result.placements.length > 0 ? result.placements.length : 1;
+        const totalUsedSheetArea = await nestingService.getUsedSheetsAreaForJob({ configured_sheets: configuredSheets, remnant_id: remnantId, sheet_width: sheetWidth, sheet_height: sheetHeight }, numSheets, pool);
+        const netUtil = result.statistics?.netUtilization !== undefined ? result.statistics.netUtilization : result.utilization;
+        const cost = costingService.calculateCost(materialType, thickness, sheetWidth, sheetHeight, netUtil, totalUsedSheetArea);
         const largestRemnantWidth = result.largestRemnantWidth;
         const largestRemnantHeight = result.largestRemnantHeight;
         const largestRemnantArea = result.largestRemnantArea;
@@ -416,7 +466,7 @@ const runNestingInBackground = async (jobId, files, projectId, optimizationLevel
           utilization: result.utilization,
           outputFile: result.outputSvg,
           outputJson: result.outputJson,
-          remainingArea: sheetArea - ((result.utilization / 100) * sheetArea),
+          remainingArea: totalUsedSheetArea - ((netUtil / 100) * totalUsedSheetArea),
           largestRemnantArea,
           largestRemnantWidth,
           largestRemnantHeight,
@@ -430,8 +480,14 @@ const runNestingInBackground = async (jobId, files, projectId, optimizationLevel
           maxX: result.maxX,
           maxY: result.maxY,
           leftoverRegions: result.leftoverRegions,
-          applied: (strat === 'a')
+          applied: (strat === 'a'),
+          numSheets,
+          sheetwiseUtilizations: result.statistics?.sheetwiseUtilizations || [result.utilization],
+          averageSheetUtilization: result.statistics?.averageSheetUtilization !== undefined ? result.statistics.averageSheetUtilization : result.utilization,
+          netUtilization: netUtil
         };
+
+
 
         if (progress) {
           progress.strategyStatus[layoutKey] = 'Completed';
@@ -448,9 +504,11 @@ const runNestingInBackground = async (jobId, files, projectId, optimizationLevel
         progress.currentStage = 'selecting_best';
       }
 
-      // Initialize active layout as Strategy A
       const defaultStrat = strategyResults.strategy_a;
-      const defaultCost = costingService.calculateCost(materialType, thickness, sheetWidth, sheetHeight, defaultStrat.utilization);
+      const numSheetsDefault = defaultStrat.numSheets || 1;
+      const totalUsedSheetArea = await nestingService.getUsedSheetsAreaForJob({ configured_sheets: configuredSheets, remnant_id: remnantId, sheet_width: sheetWidth, sheet_height: sheetHeight }, numSheetsDefault, pool);
+      const defaultCost = costingService.calculateCost(materialType, thickness, sheetWidth, sheetHeight, defaultStrat.netUtilization !== undefined ? defaultStrat.netUtilization : defaultStrat.utilization, totalUsedSheetArea);
+
 
       if (progress) {
         progress.currentStage = 'preparing_stats';
@@ -467,7 +525,7 @@ const runNestingInBackground = async (jobId, files, projectId, optimizationLevel
       await pool.query(query, [
         'completed',
         defaultStrat.utilization,
-        defaultStrat.outputFile,
+        'uploads/projects/' + projectId + '/results/nested_output.svg',
         defaultStrat.placedParts,
         defaultCost.estimatedWeight,
         defaultStrat.materialCost,
@@ -541,7 +599,7 @@ const runNestingInBackground = async (jobId, files, projectId, optimizationLevel
         }
       };
 
-      const result = await nestingService.runDeepnestNextInWorker(files, projectId, optimizationLevel, sheetWidth, sheetHeight, 'single', onProgress, remnantId);
+      const result = await nestingService.runDeepnestNextInWorker(files, projectId, optimizationLevel, sheetWidth, sheetHeight, 'single', onProgress, remnantId, configuredSheets);
       const stratRuntime = Date.now() - runStart;
 
       if (progress) {
@@ -554,8 +612,12 @@ const runNestingInBackground = async (jobId, files, projectId, optimizationLevel
         progress.currentStage = 'preparing_stats';
       }
 
-      const cost = costingService.calculateCost(materialType, thickness, sheetWidth, sheetHeight, result.utilization);
+      const numSheets = result.placements && result.placements.length > 0 ? result.placements.length : 1;
+      const totalUsedSheetArea = await nestingService.getUsedSheetsAreaForJob({ configured_sheets: configuredSheets, remnant_id: remnantId, sheet_width: sheetWidth, sheet_height: sheetHeight }, numSheets, pool);
+      const netUtil = result.statistics?.netUtilization !== undefined ? result.statistics.netUtilization : result.utilization;
+      const cost = costingService.calculateCost(materialType, thickness, sheetWidth, sheetHeight, netUtil, totalUsedSheetArea);
       const cuttingTime = result.estimatedCuttingTime || 0.00;
+
 
       const query = `
         UPDATE nest_jobs
@@ -621,6 +683,20 @@ const runNestingInBackground = async (jobId, files, projectId, optimizationLevel
       console.log(`[NestingController] Job ID ${jobId} completed and remnant stored successfully.`);
     }
   } catch (err) {
+    try {
+      const jobRes = await pool.query('SELECT configured_sheets FROM nest_jobs WHERE id = $1', [jobId]);
+      const configuredSheets = jobRes.rows[0]?.configured_sheets;
+      if (configuredSheets && Array.isArray(configuredSheets)) {
+        for (const s of configuredSheets) {
+          if (s.source === 'remnant' && s.remnantId) {
+            await pool.query("UPDATE remnants SET status = 'Available' WHERE id = $1", [s.remnantId]);
+          }
+        }
+      }
+    } catch (restoreErr) {
+      console.error('[NestingController] Failed to restore remnants status on job failure:', restoreErr.message);
+    }
+
     if (remnantId) {
       try {
         await pool.query("UPDATE remnants SET status = 'Available' WHERE id = $1", [remnantId]);
@@ -662,10 +738,34 @@ const startNestingJob = async (req, res) => {
     const optimizationLevel = req.body?.optimizationLevel || 'greedy';
     let sheetWidth = parseInt(req.body?.sheetWidth, 10) || 1000;
     let sheetHeight = parseInt(req.body?.sheetHeight, 10) || 1000;
-    const remnantId = req.body?.remnantId ? parseInt(req.body.remnantId, 10) : null;
+    let remnantId = req.body?.remnantId ? parseInt(req.body.remnantId, 10) : null;
     const nestingMode = req.body?.nestingMode || 'multi';
+    const configuredSheets = req.body?.configuredSheets || null;
 
-    if (remnantId) {
+    // Resolve base dimensions and remnant ID from configured sheets if provided
+    if (configuredSheets && Array.isArray(configuredSheets) && configuredSheets.length > 0) {
+      const firstSheet = configuredSheets[0];
+      sheetWidth = parseInt(firstSheet.width, 10) || 1000;
+      sheetHeight = parseInt(firstSheet.height, 10) || 1000;
+      remnantId = firstSheet.source === 'remnant' ? (parseInt(firstSheet.remnantId, 10) || null) : null;
+    }
+
+    // Validate that all remnants requested in configuredSheets are available
+    if (configuredSheets && Array.isArray(configuredSheets)) {
+      for (const s of configuredSheets) {
+        if (s.source === 'remnant' && s.remnantId) {
+          const remnantCheck = await pool.query("SELECT id FROM remnants WHERE id = $1 AND used = false AND status = 'Available'", [s.remnantId]);
+          if (remnantCheck.rows.length === 0) {
+            return res.status(400).json({
+              success: false,
+              message: `Remnant RM-${String(s.remnantId).padStart(4, '0')} is either not available or already reserved/consumed.`
+            });
+          }
+        }
+      }
+    }
+
+    if (remnantId && (!configuredSheets || configuredSheets.length === 0)) {
       const remnantCheck = await pool.query('SELECT remaining_width, remaining_height FROM remnants WHERE id = $1 AND used = false', [remnantId]);
       if (remnantCheck.rows.length === 0) {
         return res.status(400).json({
@@ -682,8 +782,8 @@ const startNestingJob = async (req, res) => {
     const operatorEmail = req.body?.operatorEmail || null;
 
     const insertQuery = `
-      INSERT INTO nest_jobs (project_id, status, input_file_count, total_parts, sheet_width, sheet_height, remnant_id, optimization_level, nesting_mode, operator_name, operator_email)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      INSERT INTO nest_jobs (project_id, status, input_file_count, total_parts, sheet_width, sheet_height, remnant_id, optimization_level, nesting_mode, operator_name, operator_email, configured_sheets)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       RETURNING id, status
     `;
     const insertResult = await pool.query(insertQuery, [
@@ -697,9 +797,19 @@ const startNestingJob = async (req, res) => {
       optimizationLevel, 
       nestingMode,
       operatorName,
-      operatorEmail
+      operatorEmail,
+      JSON.stringify(configuredSheets)
     ]);
     const jobId = insertResult.rows[0].id;
+
+    // Reserve all selected remnants immediately when job starts to prevent other jobs from grabbing them
+    if (configuredSheets && Array.isArray(configuredSheets)) {
+      for (const s of configuredSheets) {
+        if (s.source === 'remnant' && s.remnantId) {
+          await pool.query("UPDATE remnants SET status = 'Reserved' WHERE id = $1", [s.remnantId]);
+        }
+      }
+    }
 
     // Update status = 'processing'
     const updateQuery = `
@@ -819,6 +929,40 @@ const getJobStatus = async (req, res) => {
   }
 };
 
+const getLayoutStatistics = (relativeJsonPath, fallbackUtil) => {
+  if (relativeJsonPath) {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const absolutePath = path.join(__dirname, '../', relativeJsonPath);
+      if (fs.existsSync(absolutePath)) {
+        const data = JSON.parse(fs.readFileSync(absolutePath, 'utf8'));
+        if (data && data.statistics) {
+          const stats = data.statistics;
+          if (stats.sheetwiseUtilizations && stats.sheetwiseUtilizations.length > 0) {
+            return {
+              overallUtilization: stats.overallUtilization !== undefined ? parseFloat(stats.overallUtilization) : fallbackUtil,
+              averageSheetUtilization: stats.averageSheetUtilization !== undefined ? parseFloat(stats.averageSheetUtilization) : fallbackUtil,
+              sheetwiseUtilizations: stats.sheetwiseUtilizations,
+              netUtilization: stats.netUtilization !== undefined ? parseFloat(stats.netUtilization) : fallbackUtil,
+              sheetwiseNetUtilizations: stats.sheetwiseNetUtilizations || [fallbackUtil]
+            };
+          }
+        }
+      }
+    } catch (e) {
+      console.error(`Failed to read layout statistics from ${relativeJsonPath}:`, e.message);
+    }
+  }
+  return {
+    overallUtilization: fallbackUtil,
+    averageSheetUtilization: fallbackUtil,
+    sheetwiseUtilizations: [fallbackUtil],
+    netUtilization: fallbackUtil,
+    sheetwiseNetUtilizations: [fallbackUtil]
+  };
+};
+
 // 3. Get Nesting Result
 const getNestingResult = async (req, res) => {
   const { jobId } = req.params;
@@ -843,6 +987,7 @@ const getNestingResult = async (req, res) => {
         j.layout_source,
         j.nesting_mode,
         j.strategy_results,
+        j.configured_sheets,
         p.material_type,
         p.material_thickness
       FROM nest_jobs j
@@ -859,6 +1004,30 @@ const getNestingResult = async (req, res) => {
     }
 
     const job = result.rows[0];
+
+    const fs = require('fs');
+    const path = require('path');
+    let numSheets = 1;
+
+    const activeJsonRelative = job.output_file ? job.output_file.replace('.svg', '.json') : null;
+    const mainStats = getLayoutStatistics(activeJsonRelative, job.utilization !== null ? parseFloat(job.utilization) : 0);
+
+    const jsonPath = activeJsonRelative ? path.join(__dirname, '../', activeJsonRelative) : null;
+    if (jsonPath && fs.existsSync(jsonPath)) {
+      try {
+        const layoutData = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+        if (layoutData && layoutData.placements) {
+          numSheets = layoutData.placements.length;
+        }
+      } catch (err) {
+        console.error('Failed to parse layout JSON to get sheet count:', err.message);
+      }
+    }
+
+    const resolvedSheetwise = mainStats.sheetwiseUtilizations;
+    const resolvedAvg = mainStats.averageSheetUtilization;
+
+    const totalUsedSheetArea = await nestingService.getUsedSheetsAreaForJob(job, numSheets, pool);
     
     // Compute real-time sheet, used, waste areas and remnant scrap value
     const cost = costingService.calculateCost(
@@ -866,7 +1035,8 @@ const getNestingResult = async (req, res) => {
       job.material_thickness !== null ? parseFloat(job.material_thickness) : 0.0,
       job.sheet_width || 1000,
       job.sheet_height || 1000,
-      job.utilization !== null ? parseFloat(job.utilization) : 0.0
+      mainStats.overallUtilization,
+      totalUsedSheetArea
     );
 
     let layout1 = null;
@@ -877,41 +1047,51 @@ const getNestingResult = async (req, res) => {
     if (job.nesting_mode === 'multi' && job.strategy_results) {
       const stratResults = typeof job.strategy_results === 'string' ? JSON.parse(job.strategy_results) : job.strategy_results;
       if (stratResults.strategy_a && stratResults.strategy_b && stratResults.strategy_c) {
+        const statsA = getLayoutStatistics(stratResults.strategy_a.outputJson, stratResults.strategy_a.utilization !== null ? parseFloat(stratResults.strategy_a.utilization) : 0);
+        const statsB = getLayoutStatistics(stratResults.strategy_b.outputJson, stratResults.strategy_b.utilization !== null ? parseFloat(stratResults.strategy_b.utilization) : 0);
+        const statsC = getLayoutStatistics(stratResults.strategy_c.outputJson, stratResults.strategy_c.utilization !== null ? parseFloat(stratResults.strategy_c.utilization) : 0);
+
         layout1 = {
           svgPath: stratResults.strategy_a.outputFile,
           jsonPath: stratResults.strategy_a.outputJson,
-          utilization: stratResults.strategy_a.utilization !== null ? parseFloat(stratResults.strategy_a.utilization) : 0,
+          utilization: statsA.overallUtilization,
           cuttingTime: stratResults.strategy_a.estimatedCuttingTime !== null ? parseFloat(stratResults.strategy_a.estimatedCuttingTime) : 0,
           remnantArea: stratResults.strategy_a.largestRemnantArea !== null ? parseFloat(stratResults.strategy_a.largestRemnantArea) : 0,
           remnantValue: stratResults.strategy_a.remnantValue !== null ? parseFloat(stratResults.strategy_a.remnantValue) : 0,
           runtime: stratResults.strategy_a.optimizationRuntime !== null ? parseInt(stratResults.strategy_a.optimizationRuntime) : 0,
           materialCost: stratResults.strategy_a.materialCost !== null ? parseFloat(stratResults.strategy_a.materialCost) : 0,
           estimatedWeight: stratResults.strategy_a.estimatedWeight !== null ? parseFloat(stratResults.strategy_a.estimatedWeight) : 0,
-          placedParts: stratResults.strategy_a.placedParts !== null ? parseInt(stratResults.strategy_a.placedParts) : 0
+          placedParts: stratResults.strategy_a.placedParts !== null ? parseInt(stratResults.strategy_a.placedParts) : 0,
+          sheetwiseUtilizations: statsA.sheetwiseUtilizations,
+          averageSheetUtilization: statsA.averageSheetUtilization
         };
         layout2 = {
           svgPath: stratResults.strategy_b.outputFile,
           jsonPath: stratResults.strategy_b.outputJson,
-          utilization: stratResults.strategy_b.utilization !== null ? parseFloat(stratResults.strategy_b.utilization) : 0,
+          utilization: statsB.overallUtilization,
           cuttingTime: stratResults.strategy_b.estimatedCuttingTime !== null ? parseFloat(stratResults.strategy_b.estimatedCuttingTime) : 0,
           remnantArea: stratResults.strategy_b.largestRemnantArea !== null ? parseFloat(stratResults.strategy_b.largestRemnantArea) : 0,
           remnantValue: stratResults.strategy_b.remnantValue !== null ? parseFloat(stratResults.strategy_b.remnantValue) : 0,
           runtime: stratResults.strategy_b.optimizationRuntime !== null ? parseInt(stratResults.strategy_b.optimizationRuntime) : 0,
           materialCost: stratResults.strategy_b.materialCost !== null ? parseFloat(stratResults.strategy_b.materialCost) : 0,
           estimatedWeight: stratResults.strategy_b.estimatedWeight !== null ? parseFloat(stratResults.strategy_b.estimatedWeight) : 0,
-          placedParts: stratResults.strategy_b.placedParts !== null ? parseInt(stratResults.strategy_b.placedParts) : 0
+          placedParts: stratResults.strategy_b.placedParts !== null ? parseInt(stratResults.strategy_b.placedParts) : 0,
+          sheetwiseUtilizations: statsB.sheetwiseUtilizations,
+          averageSheetUtilization: statsB.averageSheetUtilization
         };
         layout3 = {
           svgPath: stratResults.strategy_c.outputFile,
           jsonPath: stratResults.strategy_c.outputJson,
-          utilization: stratResults.strategy_c.utilization !== null ? parseFloat(stratResults.strategy_c.utilization) : 0,
+          utilization: statsC.overallUtilization,
           cuttingTime: stratResults.strategy_c.estimatedCuttingTime !== null ? parseFloat(stratResults.strategy_c.estimatedCuttingTime) : 0,
           remnantArea: stratResults.strategy_c.largestRemnantArea !== null ? parseFloat(stratResults.strategy_c.largestRemnantArea) : 0,
           remnantValue: stratResults.strategy_c.remnantValue !== null ? parseFloat(stratResults.strategy_c.remnantValue) : 0,
           runtime: stratResults.strategy_c.optimizationRuntime !== null ? parseInt(stratResults.strategy_c.optimizationRuntime) : 0,
           materialCost: stratResults.strategy_c.materialCost !== null ? parseFloat(stratResults.strategy_c.materialCost) : 0,
           estimatedWeight: stratResults.strategy_c.estimatedWeight !== null ? parseFloat(stratResults.strategy_c.estimatedWeight) : 0,
-          placedParts: stratResults.strategy_c.placedParts !== null ? parseInt(stratResults.strategy_c.placedParts) : 0
+          placedParts: stratResults.strategy_c.placedParts !== null ? parseInt(stratResults.strategy_c.placedParts) : 0,
+          sheetwiseUtilizations: statsC.sheetwiseUtilizations,
+          averageSheetUtilization: statsC.averageSheetUtilization
         };
         averageResponseTime = (layout1.runtime + layout2.runtime + layout3.runtime) / 3;
       }
@@ -922,6 +1102,13 @@ const getNestingResult = async (req, res) => {
       projectId: job.project_id,
       status: job.status,
       utilization: job.utilization !== null ? parseFloat(job.utilization) : null,
+      sheetwiseUtilizations: resolvedSheetwise,
+      averageSheetUtilization: resolvedAvg,
+      statistics: {
+        overallUtilization: job.utilization !== null ? parseFloat(job.utilization) : null,
+        averageSheetUtilization: resolvedAvg,
+        sheetwiseUtilizations: resolvedSheetwise
+      },
       outputFile: job.output_file || null,
       totalParts: job.total_parts,
       placedParts: job.placed_parts,
@@ -944,11 +1131,13 @@ const getNestingResult = async (req, res) => {
       layoutSource: job.layout_source || 'AUTO NEST',
       nestingMode: job.nesting_mode || 'single',
       strategyResults: job.strategy_results || null,
+      configuredSheets: job.configured_sheets || null,
       layout1,
       layout2,
       layout3,
       averageResponseTime
     });
+
 
   } catch (err) {
     console.error('Error in getNestingResult:', err.message);
@@ -1069,7 +1258,7 @@ const updateLayoutPlacements = async (req, res) => {
     const filesQuery = 'SELECT * FROM uploaded_files WHERE project_id = $1 ORDER BY id ASC';
     const filesResult = await pool.query(filesQuery, [job.project_id]);
 
-    const { maxX, maxY, leftoverRegions, newUtilization } = await nestingService.updateLayoutFiles(jobId, filesResult.rows, parts, strategy);
+    const { maxX, maxY, leftoverRegions, newUtilization, statistics } = await nestingService.updateLayoutFiles(jobId, filesResult.rows, parts, strategy);
 
     const remnantDims = calculateRemnantDimensions(job.sheet_width, job.sheet_height, maxX, maxY);
     const largestRemnantArea = remnantDims.area;
@@ -1088,6 +1277,9 @@ const updateLayoutPlacements = async (req, res) => {
         strategyResults[stratKey].utilization = newUtilization;
         strategyResults[stratKey].placedParts = parts.length;
         strategyResults[stratKey].isManual = true;
+        strategyResults[stratKey].sheetwiseUtilizations = statistics?.sheetwiseUtilizations || [newUtilization];
+        strategyResults[stratKey].averageSheetUtilization = statistics?.averageSheetUtilization !== undefined ? statistics.averageSheetUtilization : newUtilization;
+        strategyResults[stratKey].netUtilization = statistics?.netUtilization !== undefined ? statistics.netUtilization : newUtilization;
       }
 
       await pool.query(
@@ -1390,7 +1582,10 @@ const applyStrategy = async (req, res) => {
     const materialType = proj ? proj.material_type : 'Mild Steel';
     const thickness = proj ? parseFloat(proj.material_thickness) : 1.00;
 
-    const cost = costingService.calculateCost(materialType, thickness, job.sheet_width, job.sheet_height, stratData.utilization);
+    const numSheets = stratData.numSheets || 1;
+    const totalUsedSheetArea = await nestingService.getUsedSheetsAreaForJob(job, numSheets, pool);
+    const cost = costingService.calculateCost(materialType, thickness, job.sheet_width, job.sheet_height, stratData.netUtilization !== undefined ? stratData.netUtilization : stratData.utilization, totalUsedSheetArea);
+
 
     const isManual = !!stratData.isManual;
     const layoutSource = isManual ? 'MANUAL EDIT' : 'AUTO NEST';
@@ -1566,13 +1761,21 @@ const finalizeLayout = async (req, res) => {
         )
     `, [job.project_id]);
 
-    const originalSheet = `${job.sheet_width}x${job.sheet_height}`;
+    const configuredSheets = job.configured_sheets || [];
     for (const region of leftoverRegions || []) {
+      const sheetIndex = region.sheetIndex || 0;
+      const conf = configuredSheets[sheetIndex] || configuredSheets[configuredSheets.length - 1];
+      const sW = region.sheetWidth || (conf ? conf.width : job.sheet_width);
+      const sH = region.sheetHeight || (conf ? conf.height : job.sheet_height);
+      const parentId = region.parentRemnantId || null;
+      const originalSheetStr = conf ? `${sW}x${sH}` : `${job.sheet_width}x${job.sheet_height}`;
+
       await partitionLeftoverGeometry(
-        job.project_id, materialType, thickness, job.sheet_width, job.sheet_height,
-        utilization, region, job.remnant_id || null, originalSheet
+        job.project_id, materialType, thickness, sW, sH,
+        utilization, region, parentId, originalSheetStr
       );
     }
+
 
     const remnantDims = calculateRemnantDimensions(job.sheet_width, job.sheet_height, maxX, maxY);
     const remnantValue = calculateRemnantValue(materialType, thickness, remnantDims.area);
@@ -1595,6 +1798,47 @@ const finalizeLayout = async (req, res) => {
   }
 };
 
+const intelligentFill = async (req, res) => {
+  const { jobId } = req.params;
+  const { placements, partsToDuplicate, limits, gridStep, rotations } = req.body;
+
+  try {
+    const jobQuery = 'SELECT project_id FROM nest_jobs WHERE id = $1';
+    const jobResult = await pool.query(jobQuery, [jobId]);
+
+    if (jobResult.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Job not found' });
+    }
+
+    const job = jobResult.rows[0];
+
+    const filesQuery = 'SELECT * FROM uploaded_files WHERE project_id = $1 ORDER BY id ASC';
+    const filesResult = await pool.query(filesQuery, [job.project_id]);
+
+    const updatedPlacements = await nestingService.calculateIntelligentFill(
+      jobId, 
+      filesResult.rows, 
+      placements, 
+      partsToDuplicate, 
+      limits,
+      gridStep,
+      rotations
+    );
+
+    return res.status(200).json({
+      success: true,
+      placements: updatedPlacements
+    });
+  } catch (err) {
+    console.error('Error in intelligentFill:', err.message);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal Server Error',
+      error: err.message
+    });
+  }
+};
+
 module.exports = {
   startNestingJob,
   getJobStatus,
@@ -1605,5 +1849,6 @@ module.exports = {
   regenerateLayout,
   applyStrategy,
   validateLayoutPlacement,
-  finalizeLayout
+  finalizeLayout,
+  intelligentFill
 };

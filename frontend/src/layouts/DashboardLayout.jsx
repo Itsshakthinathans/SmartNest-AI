@@ -41,7 +41,7 @@ export default function DashboardLayout() {
     { text: 'Dashboard', icon: <DashboardIcon />, path: '/' },
     { text: 'Projects', icon: <ProjectsIcon />, path: '/projects' },
     { text: 'Remnants', icon: <RemnantsIcon />, path: '/remnants' },
-    { text: 'Sheets', icon: <SheetsIcon />, path: '/sheets' },
+    { text: 'Material Inventory', icon: <SheetsIcon />, path: '/sheets' },
   ];
 
 
@@ -148,7 +148,7 @@ export default function DashboardLayout() {
           </IconButton>
           
           <Typography variant="h6" noWrap component="div" sx={{ color: '#ffffff', fontWeight: 700 }}>
-            {location.pathname === '/' ? 'Dashboard' : location.pathname.startsWith('/projects') ? 'Project Management' : location.pathname.startsWith('/remnants') ? 'Remnants Inventory' : location.pathname.startsWith('/sheets') ? 'Sheets Stock & History' : 'Nesting Results'}
+            {location.pathname === '/' ? 'Dashboard' : location.pathname.startsWith('/projects') ? 'Project Management' : location.pathname.startsWith('/remnants') ? 'Remnants Inventory' : location.pathname.startsWith('/sheets') ? 'Material Inventory & History' : 'Nesting Results'}
           </Typography>
 
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>

@@ -1,5 +1,6 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Box, Typography } from '@mui/material';
+import useUniversalKeyboard from '../hooks/useUniversalKeyboard';
 
 // Helper to construct path data from geometry and holes
 const getPathData = (geometry, holes = [], offsetX = 0, offsetY = 0) => {
@@ -67,6 +68,7 @@ export function GhostPreview({ part, position, status = 'neutral', sheetX = 10, 
 export default function LayoutCanvas({
   sheetWidth = 1000,
   sheetHeight = 1000,
+  configuredSheets = [],
   sheetX = 10,
   sheetY = 10,
   placements = [],
@@ -89,14 +91,137 @@ export default function LayoutCanvas({
   onCancelPlacement = () => {},
   sheetGeometry = null,
   onDragEnd = () => {},
-  onRotateSelectedLibraryPart = () => {}
+  onRotateSelectedLibraryPart = () => {},
+  onTranslateSelectedPart = () => {},
+  onRotateSelectedPart = () => {},
+  onDeleteSelectedPart = () => {},
+  onUndo = () => {},
+  onRedo = () => {}
 }) {
   const containerRef = useRef(null);
   const [isPanning, setIsPanning] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [ghostPos, setGhostPos] = useState({ x: 0, y: 0 });
+
+  useEffect(() => {
+    console.log('[DEBUG] LayoutCanvas component MOUNTED');
+    return () => {
+      console.log('[DEBUG] LayoutCanvas component UNMOUNTED');
+    };
+  }, []);
+  
+  const isManualFillActive = !!selectedLibraryPart;
+  const isManualAdjustmentActive = isEditMode && selectedPlacementId !== null;
+  const isKeyboardActive = isManualFillActive || isManualAdjustmentActive;
+
+  useUniversalKeyboard({
+    isActive: isKeyboardActive,
+    stepSize: 10,
+    largeStepSize: 50,
+    onMoveUp: (step) => {
+      if (isManualFillActive) {
+        setGhostPos(prev => ({ ...prev, y: prev.y - step }));
+      } else if (isManualAdjustmentActive) {
+        onTranslateSelectedPart(selectedPlacementId, 0, -step);
+      }
+    },
+    onMoveDown: (step) => {
+      if (isManualFillActive) {
+        setGhostPos(prev => ({ ...prev, y: prev.y + step }));
+      } else if (isManualAdjustmentActive) {
+        onTranslateSelectedPart(selectedPlacementId, 0, step);
+      }
+    },
+    onMoveLeft: (step) => {
+      if (isManualFillActive) {
+        setGhostPos(prev => ({ ...prev, x: prev.x - step }));
+      } else if (isManualAdjustmentActive) {
+        onTranslateSelectedPart(selectedPlacementId, -step, 0);
+      }
+    },
+    onMoveRight: (step) => {
+      if (isManualFillActive) {
+        setGhostPos(prev => ({ ...prev, x: prev.x + step }));
+      } else if (isManualAdjustmentActive) {
+        onTranslateSelectedPart(selectedPlacementId, step, 0);
+      }
+    },
+    onRotate90: () => {
+      if (isManualFillActive) {
+        onRotateSelectedLibraryPart(90);
+      } else if (isManualAdjustmentActive) {
+        onRotateSelectedPart(selectedPlacementId, 90);
+      }
+    },
+    onRotate15: () => {
+      if (isManualFillActive) {
+        onRotateSelectedLibraryPart(15);
+      } else if (isManualAdjustmentActive) {
+        onRotateSelectedPart(selectedPlacementId, 15);
+      }
+    },
+    onRotateMinus15: () => {
+      if (isManualFillActive) {
+        onRotateSelectedLibraryPart(-15);
+      } else if (isManualAdjustmentActive) {
+        onRotateSelectedPart(selectedPlacementId, -15);
+      }
+    },
+    onDelete: () => {
+      if (isManualAdjustmentActive) {
+        onDeleteSelectedPart(selectedPlacementId);
+      }
+    },
+    onConfirm: () => {
+      if (isManualFillActive) {
+        if (getValidationState() === 'invalid') return;
+        const targetSheetId = getSheetIndexFromY(ghostPos.y + sheetY);
+        const targetYOffset = getSheetYOffset(targetSheetId);
+        onPlacePart({ 
+          x: ghostPos.x, 
+          y: ghostPos.y - targetYOffset,
+          sheetId: targetSheetId
+        });
+      } else if (isManualAdjustmentActive) {
+        onSelectPlacement(null);
+      }
+    },
+    onCancel: () => {
+      if (isManualFillActive) {
+        onCancelPlacement();
+      } else if (isManualAdjustmentActive) {
+        onSelectPlacement(null);
+      }
+    },
+    onUndo,
+    onRedo
+  });
+
   const [dragStartPartPos, setDragStartPartPos] = useState({ x: 0, y: 0 });
-  const numSheets = Math.max(1, ...placements.map(p => (p.sheetId || 0) + 1));
+  const [dragStartPartSheetId, setDragStartPartSheetId] = useState(0);
+  const numSheets = configuredSheets.length > 0 ? configuredSheets.length : Math.max(1, ...placements.map(p => (p.sheetId || 0) + 1));
+
+  const getSheetYOffset = (sheetIdx) => {
+    let offset = 0;
+    for (let i = 0; i < sheetIdx; i++) {
+      const conf = (configuredSheets && configuredSheets[i]) || (configuredSheets && configuredSheets[configuredSheets.length - 1]);
+      offset += conf ? conf.height : sheetHeight;
+    }
+    return offset + sheetIdx * 50;
+  };
+
+  const getSheetIndexFromY = (canvasY) => {
+    let currentY = sheetY;
+    for (let i = 0; i < numSheets; i++) {
+      const conf = (configuredSheets && configuredSheets[i]) || (configuredSheets && configuredSheets[configuredSheets.length - 1]);
+      const sH = conf ? conf.height : sheetHeight;
+      if (canvasY >= currentY && canvasY <= currentY + sH + 50) {
+        return i;
+      }
+      currentY += sH + 50;
+    }
+    return 0;
+  };
 
   // Handle pointer transformations
   const getCanvasRelativeCoords = (clientX, clientY) => {
@@ -144,21 +269,30 @@ export default function LayoutCanvas({
     const { geometry } = selectedLibraryPart;
     if (!geometry) return 'neutral';
 
+    const coords = ghostPos; // coordinates relative to container
+    // We want to calculate the relative position on the sheet
+    const targetSheetId = getSheetIndexFromY(coords.y + sheetY);
+    const yOffset = getSheetYOffset(targetSheetId);
+    
+    const relX = coords.x;
+    const relY = coords.y - yOffset;
+
     // Get candidate rotated bounds relative to sheet origin
     const candBounds = getRotatedAndShiftedBounds(
       geometry,
       selectedLibraryPart.rotation || 0,
-      ghostPos.x,
-      ghostPos.y
+      relX,
+      relY
     );
 
     // Containment within sheet check (sheet boundaries relative to sheet coordinate space)
+    const conf = (configuredSheets && configuredSheets[targetSheetId]) || (configuredSheets && configuredSheets[configuredSheets.length - 1]);
     let sMinX = 0;
-    let sMaxX = sheetWidth;
+    let sMaxX = conf ? conf.width : sheetWidth;
     let sMinY = 0;
-    let sMaxY = sheetHeight;
+    let sMaxY = conf ? conf.height : sheetHeight;
 
-    if (sheetGeometry && sheetGeometry.outer) {
+    if (sheetGeometry && sheetGeometry.outer && targetSheetId === 0) {
       let minSX = Infinity, maxSX = -Infinity, minSY = Infinity, maxSY = -Infinity;
       sheetGeometry.outer.forEach(pt => {
         if (pt.x < minSX) minSX = pt.x;
@@ -182,6 +316,8 @@ export default function LayoutCanvas({
 
     // Overlap checks with placed parts
     for (const pl of placements) {
+      if ((pl.sheetId || 0) !== targetSheetId) continue; // Skip parts on other sheets!
+
       let plBounds;
       if (pl.source === 'manual') {
         plBounds = getRotatedAndShiftedBounds(
@@ -199,7 +335,7 @@ export default function LayoutCanvas({
         let minPX = Infinity, maxPX = -Infinity, minPY = Infinity, maxPY = -Infinity;
         poly.points.forEach(pt => {
           const rx = pt.x + dx - sheetX;
-          const ry = pt.y + dy - sheetY;
+          const ry = pt.y + dy - sheetY - getSheetYOffset(pl.sheetId || 0);
           if (rx < minPX) minPX = rx;
           if (rx > maxPX) maxPX = rx;
           if (ry < minPY) minPY = ry;
@@ -231,6 +367,7 @@ export default function LayoutCanvas({
         if (part) {
           setDraggingPartId(pId);
           setDragStartPartPos({ x: part.x, y: part.y });
+          setDragStartPartSheetId(part.sheetId || 0);
           setDragStartMouse({ x: e.clientX, y: e.clientY });
           onSelectPlacement(pId);
           return;
@@ -257,7 +394,17 @@ export default function LayoutCanvas({
       const dyScreen = e.clientY - dragStartMouse.y;
       const dxModel = dxScreen / zoom;
       const dyModel = dyScreen / zoom;
-      onMovePart(draggingPartId, dragStartPartPos.x + dxModel, dragStartPartPos.y + dyModel);
+      
+      const part = placements.find(p => p.id === draggingPartId);
+      if (part) {
+        const initialYOffset = getSheetYOffset(dragStartPartSheetId);
+        const currentAbsoluteY = dragStartPartPos.y + dyModel + sheetY + initialYOffset;
+        const targetSheetId = getSheetIndexFromY(currentAbsoluteY);
+        const targetYOffset = getSheetYOffset(targetSheetId);
+        const nextRelY = dragStartPartPos.y + dyModel + initialYOffset - targetYOffset;
+        
+        onMovePart(draggingPartId, dragStartPartPos.x + dxModel, nextRelY, targetSheetId);
+      }
       return;
     }
 
@@ -278,32 +425,19 @@ export default function LayoutCanvas({
     }
   };
 
-  const handleKeyDown = (e) => {
-    if (selectedLibraryPart && (e.key === 'r' || e.key === 'R')) {
-      e.preventDefault();
-      onRotateSelectedLibraryPart(90);
-    }
-    if (selectedLibraryPart && (e.key === 'l' || e.key === 'L')) {
-      e.preventDefault();
-      if (e.shiftKey) {
-        onRotateSelectedLibraryPart(90);
-      } else {
-        onRotateSelectedLibraryPart(15);
-      }
-    }
-    if (selectedLibraryPart && e.key === 'Escape') {
-      e.preventDefault();
-      onCancelPlacement();
-    }
-  };
-
   const handleCanvasClick = (e) => {
     if (selectedLibraryPart && e.button === 0) {
       if (getValidationState() === 'invalid') {
         return; // Do NOT allow placement if invalid
       }
       const coords = getCanvasRelativeCoords(e.clientX, e.clientY);
-      onPlacePart({ x: coords.x - sheetX, y: coords.y - sheetY });
+      const targetSheetId = getSheetIndexFromY(coords.y);
+      const targetYOffset = getSheetYOffset(targetSheetId);
+      onPlacePart({ 
+        x: coords.x - sheetX, 
+        y: coords.y - sheetY - targetYOffset,
+        sheetId: targetSheetId
+      });
     }
   };
 
@@ -334,8 +468,6 @@ export default function LayoutCanvas({
       onClick={handleCanvasClick}
       onWheel={handleWheel}
       onContextMenu={handleContextMenu}
-      tabIndex={0}
-      onKeyDown={handleKeyDown}
       sx={{
         width: '100%',
         height: '500px',
@@ -392,8 +524,11 @@ export default function LayoutCanvas({
         <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
           {/* Sheet boundary background */}
           {Array.from({ length: numSheets }).map((_, sheetIdx) => {
-            const yOffset = sheetIdx * (sheetHeight + 50);
-            return sheetGeometry ? (
+            const conf = (configuredSheets && configuredSheets[sheetIdx]) || (configuredSheets && configuredSheets[configuredSheets.length - 1]);
+            const sW = conf ? conf.width : sheetWidth;
+            const sH = conf ? conf.height : sheetHeight;
+            const yOffset = getSheetYOffset(sheetIdx);
+            return sheetGeometry && sheetIdx === 0 ? (
               <path
                 key={`sheet-boundary-${sheetIdx}`}
                 d={getPathData(sheetGeometry.outer, sheetGeometry.holes || [], sheetX, sheetY + yOffset)}
@@ -407,8 +542,8 @@ export default function LayoutCanvas({
                 key={`sheet-boundary-${sheetIdx}`}
                 x={sheetX}
                 y={sheetY + yOffset}
-                width={sheetWidth}
-                height={sheetHeight}
+                width={sW}
+                height={sH}
                 fill="#12161f"
                 stroke="#4f5b66"
                 strokeWidth="1.5"
@@ -418,8 +553,11 @@ export default function LayoutCanvas({
 
           {/* Grid overlay */}
           {showGrid && Array.from({ length: numSheets }).map((_, sheetIdx) => {
-            const yOffset = sheetIdx * (sheetHeight + 50);
-            return sheetGeometry ? (
+            const conf = (configuredSheets && configuredSheets[sheetIdx]) || (configuredSheets && configuredSheets[configuredSheets.length - 1]);
+            const sW = conf ? conf.width : sheetWidth;
+            const sH = conf ? conf.height : sheetHeight;
+            const yOffset = getSheetYOffset(sheetIdx);
+            return sheetGeometry && sheetIdx === 0 ? (
               <path
                 key={`sheet-grid-${sheetIdx}`}
                 d={getPathData(sheetGeometry.outer, sheetGeometry.holes || [], sheetX, sheetY + yOffset)}
@@ -431,8 +569,8 @@ export default function LayoutCanvas({
                 key={`sheet-grid-${sheetIdx}`}
                 x={sheetX}
                 y={sheetY + yOffset}
-                width={sheetWidth}
-                height={sheetHeight}
+                width={sW}
+                height={sH}
                 fill="url(#canvas-grid)"
               />
             );
@@ -440,7 +578,7 @@ export default function LayoutCanvas({
 
           {/* Sheet Labels */}
           {Array.from({ length: numSheets }).map((_, sheetIdx) => {
-            const yOffset = sheetIdx * (sheetHeight + 50);
+            const yOffset = getSheetYOffset(sheetIdx);
             return (
               <text
                 key={`sheet-label-${sheetIdx}`}
@@ -468,7 +606,9 @@ export default function LayoutCanvas({
 
             if (part) {
               const dx = part.x - part.originalX;
-              const dy = part.y - part.originalY;
+              const targetYOffset = getSheetYOffset(part.sheetId || 0);
+              const origYOffset = getSheetYOffset(part.originalSheetId !== undefined ? part.originalSheetId : (part.sheetId || 0));
+              const dy = part.y - part.originalY + (targetYOffset - origYOffset);
               const dRot = part.rotation - part.originalRotation;
               transformStr = `translate(${dx}, ${dy}) rotate(${dRot}, ${poly.centroidX}, ${poly.centroidY})`;
             }
@@ -517,7 +657,7 @@ export default function LayoutCanvas({
               const isSelected = selectedPlacementId === part.id;
 
               const pathD = getPathData(part.geometry, part.holes);
-              const yOffset = (part.sheetId || 0) * (sheetHeight + 50);
+              const yOffset = getSheetYOffset(part.sheetId || 0);
               const transformStr = `translate(${part.x + sheetX}, ${part.y + sheetY + yOffset}) rotate(${part.rotation})`;
 
               let partFill = 'rgba(187, 154, 247, 0.15)'; // Magenta/Purple translucent
