@@ -96,7 +96,8 @@ export default function LayoutCanvas({
   onRotateSelectedPart = () => {},
   onDeleteSelectedPart = () => {},
   onUndo = () => {},
-  onRedo = () => {}
+  onRedo = () => {},
+  height = '500px'
 }) {
   const containerRef = useRef(null);
   const [isPanning, setIsPanning] = useState(false);
@@ -112,7 +113,7 @@ export default function LayoutCanvas({
   
   const isManualFillActive = !!selectedLibraryPart;
   const isManualAdjustmentActive = isEditMode && selectedPlacementId !== null;
-  const isKeyboardActive = isManualFillActive || isManualAdjustmentActive;
+  const isKeyboardActive = isManualFillActive || isEditMode;
 
   useUniversalKeyboard({
     isActive: isKeyboardActive,
@@ -197,6 +198,7 @@ export default function LayoutCanvas({
     onRedo
   });
 
+  const [dragStartMouse, setDragStartMouse] = useState({ x: 0, y: 0 });
   const [dragStartPartPos, setDragStartPartPos] = useState({ x: 0, y: 0 });
   const [dragStartPartSheetId, setDragStartPartSheetId] = useState(0);
   const numSheets = configuredSheets.length > 0 ? configuredSheets.length : Math.max(1, ...placements.map(p => (p.sheetId || 0) + 1));
@@ -355,24 +357,40 @@ export default function LayoutCanvas({
     return 'valid';
   };
 
+  const handlePartMouseDown = (e, partId) => {
+    if (!isEditMode) return;
+    e.stopPropagation();
+
+    if (containerRef.current) {
+      containerRef.current.focus();
+    }
+
+    const part = placements.find(p => p.id === partId);
+    setDraggingPartId(partId);
+    setDragStartMouse({ x: e.clientX, y: e.clientY });
+    if (part) {
+      setDragStartPartPos({ x: part.x, y: part.y });
+      setDragStartPartSheetId(part.sheetId || 0);
+    } else {
+      const poly = parsedPolygons.find(p => p.id === partId);
+      if (poly) {
+        setDragStartPartPos({ x: poly.centroidX, y: poly.centroidY });
+        setDragStartPartSheetId(0);
+      }
+    }
+    onSelectPlacement(partId);
+  };
+
   const handleMouseDown = (e) => {
     if (selectedLibraryPart) return; // Ignore panning during place mode
 
-    // If edit mode and clicking a part, handle dragging
-    if (isEditMode && e.target.tagName === 'path') {
-      const partIdAttr = e.target.getAttribute('data-part-id');
-      if (partIdAttr) {
-        const pId = parseInt(partIdAttr, 10);
-        const part = placements.find(p => p.id === pId);
-        if (part) {
-          setDraggingPartId(pId);
-          setDragStartPartPos({ x: part.x, y: part.y });
-          setDragStartPartSheetId(part.sheetId || 0);
-          setDragStartMouse({ x: e.clientX, y: e.clientY });
-          onSelectPlacement(pId);
-          return;
-        }
-      }
+    if (containerRef.current) {
+      containerRef.current.focus();
+    }
+
+    // If edit mode and clicking background, clear selection
+    if (isEditMode) {
+      onSelectPlacement(null);
     }
 
     // Default: Panning
@@ -461,6 +479,7 @@ export default function LayoutCanvas({
   return (
     <Box
       ref={containerRef}
+      tabIndex={0}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
@@ -470,7 +489,7 @@ export default function LayoutCanvas({
       onContextMenu={handleContextMenu}
       sx={{
         width: '100%',
-        height: '500px',
+        height: height,
         bgcolor: '#090b0e',
         borderRadius: '12px',
         overflow: 'hidden',
@@ -536,6 +555,7 @@ export default function LayoutCanvas({
                 stroke="#0d9488"
                 strokeWidth="2"
                 fillRule="evenodd"
+                pointerEvents="none"
               />
             ) : (
               <rect
@@ -547,6 +567,7 @@ export default function LayoutCanvas({
                 fill="#12161f"
                 stroke="#4f5b66"
                 strokeWidth="1.5"
+                pointerEvents="none"
               />
             );
           })}
@@ -563,6 +584,7 @@ export default function LayoutCanvas({
                 d={getPathData(sheetGeometry.outer, sheetGeometry.holes || [], sheetX, sheetY + yOffset)}
                 fill="url(#canvas-grid)"
                 fillRule="evenodd"
+                pointerEvents="none"
               />
             ) : (
               <rect
@@ -572,6 +594,7 @@ export default function LayoutCanvas({
                 width={sW}
                 height={sH}
                 fill="url(#canvas-grid)"
+                pointerEvents="none"
               />
             );
           })}
@@ -642,6 +665,7 @@ export default function LayoutCanvas({
                     transition: 'fill 0.15s ease, stroke 0.15s ease',
                     cursor: isEditMode ? (draggingPartId === poly.id ? 'grabbing' : 'grab') : 'pointer'
                   }}
+                  onMouseDown={(e) => handlePartMouseDown(e, poly.id)}
                   onMouseEnter={() => setHoveredPartId(poly.id)}
                   onMouseLeave={() => setHoveredPartId(null)}
                 />
@@ -686,6 +710,7 @@ export default function LayoutCanvas({
                       transition: 'fill 0.15s ease, stroke 0.15s ease',
                       cursor: isEditMode ? (draggingPartId === part.id ? 'grabbing' : 'grab') : 'pointer'
                     }}
+                    onMouseDown={(e) => handlePartMouseDown(e, part.id)}
                     onMouseEnter={() => setHoveredPartId(part.id)}
                     onMouseLeave={() => setHoveredPartId(null)}
                   />

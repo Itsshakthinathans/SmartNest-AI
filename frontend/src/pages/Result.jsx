@@ -52,6 +52,9 @@ import PartsLibrary from '../components/PartsLibrary';
 import LayoutCanvas from '../components/LayoutCanvas';
 import Toolbar from '../components/Toolbar';
 import Statistics from '../components/Statistics';
+import EditingSidebar from '../components/EditingSidebar';
+import IntelligentFillPanel from '../components/IntelligentFillPanel';
+import CoordinateShifter from '../components/CoordinateShifter';
 
 const getCentroid = (geometry) => {
   if (!geometry || geometry.length === 0) return { x: 0, y: 0 };
@@ -179,6 +182,7 @@ export default function Result() {
   const pollTimerRef = useRef(null);
   const canvasRef = useRef(null);
   const [isFullscreenOpen, setIsFullscreenOpen] = useState(false);
+  const [isFullscreenSidebarOpen, setIsFullscreenSidebarOpen] = useState(true);
   const fullscreenCanvasRef = useRef(null);
 
   const [status, setStatus] = useState('pending');
@@ -2004,42 +2008,12 @@ export default function Result() {
               />
               
               {/* Intelligent Fill Control Panel */}
-              <Paper sx={{ p: 2.5, bgcolor: '#0f1319', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '12px' }}>
-                <Typography variant="subtitle2" sx={{ color: '#565f89', fontWeight: 700, textTransform: 'uppercase', mb: 1 }}>
-                  Intelligent Fill
-                </Typography>
-                <Typography variant="caption" sx={{ color: '#a9b1d6', display: 'block', mb: 2 }}>
-                  Maximize material utilization by automatically packing remaining empty sheet space with extra part duplicates.
-                </Typography>
-                <Button
-                  variant="contained"
-                  fullWidth
-                  onClick={openIntelligentFillDialog}
-                  disabled={!isEditMode || finalizing || savingLayout}
-                  sx={{
-                    background: 'linear-gradient(135deg, #0d9488 0%, #06b6d4 100%)',
-                    color: '#ffffff',
-                    fontWeight: 700,
-                    textTransform: 'none',
-                    py: 1,
-                    '&:hover': {
-                      background: 'linear-gradient(135deg, #0b7a70 0%, #0594ad 100%)',
-                    },
-                    '&.Mui-disabled': {
-                      background: 'rgba(255,255,255,0.03)',
-                      color: 'rgba(255,255,255,0.25)',
-                      border: '1px solid rgba(255,255,255,0.05)'
-                    }
-                  }}
-                >
-                  ⚡ Intelligent Fill Layout
-                </Button>
-                {!isEditMode && (
-                  <Typography variant="caption" sx={{ color: '#ef4444', fontWeight: 600, display: 'block', mt: 1, textAlign: 'center' }}>
-                    * Enable Manual Adjust mode to fill.
-                  </Typography>
-                )}
-              </Paper>
+              <IntelligentFillPanel
+                isEditMode={isEditMode}
+                openIntelligentFillDialog={openIntelligentFillDialog}
+                finalizing={finalizing}
+                savingLayout={savingLayout}
+              />
             </Box>
           </Grid>
 
@@ -2451,181 +2425,18 @@ export default function Result() {
 
               {/* Manual Nest Editor Card */}
               {isEditMode && (
-                <Paper 
-                  sx={{ 
-                    p: 3, 
-                    bgcolor: '#0f1319', 
-                    border: '1.5px solid #ec4899', 
-                    borderRadius: '12px',
-                    boxShadow: '0 0 15px rgba(236, 72, 153, 0.1)',
-                  }}
-                >
-                  <Typography variant="subtitle1" sx={{ color: '#ffffff', fontWeight: 800, mb: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
-                    📐 Coordinate Shifter
-                  </Typography>
-                  <Typography variant="caption" sx={{ color: '#565f89', display: 'block', mb: 2 }}>
-                    Precisely shift or rotate selected parts on the active plate.
-                  </Typography>
-                  <Divider sx={{ borderColor: 'rgba(255,255,255,0.06)', mb: 2 }} />
-
-                  {selectedPartId !== null ? (
-                    (() => {
-                      const part = localParts.find(p => p.id === selectedPartId);
-                      if (!part) return null;
-                      return (
-                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                          <Box sx={{ bgcolor: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '8px', p: 2 }}>
-                            <Typography variant="subtitle2" sx={{ color: '#ec4899', fontWeight: 800, mb: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <span>Selected Part #{part.id}</span>
-                              {draggingPartId === part.id && (
-                                <Box sx={{ fontSize: '0.7rem', color: '#10b981', bgcolor: 'rgba(16, 185, 129, 0.1)', px: 1, py: 0.2, borderRadius: '4px', border: '1px solid rgba(16, 185, 129, 0.2)' }}>
-                                  Dragging...
-                                </Box>
-                              )}
-                            </Typography>
-                            <Typography variant="caption" sx={{ color: '#565f89', display: 'block', mb: 1.5, textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                              File: {part.filename}
-                            </Typography>
-                            <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)', mb: 1.5 }} />
-                            <Grid container spacing={2}>
-                              <Grid item xs={4}>
-                                <Typography variant="caption" sx={{ color: '#565f89', display: 'block', textTransform: 'uppercase', fontWeight: 700 }}>X Position</Typography>
-                                <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>{Math.round(part.x)} mm</Typography>
-                              </Grid>
-                              <Grid item xs={4}>
-                                <Typography variant="caption" sx={{ color: '#565f89', display: 'block', textTransform: 'uppercase', fontWeight: 700 }}>Y Position</Typography>
-                                <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>{Math.round(part.y)} mm</Typography>
-                              </Grid>
-                              <Grid item xs={4}>
-                                <Typography variant="caption" sx={{ color: '#565f89', display: 'block', textTransform: 'uppercase', fontWeight: 700 }}>Rotation</Typography>
-                                <Typography variant="body2" sx={{ color: '#ffffff', fontWeight: 700 }}>{part.rotation}°</Typography>
-                              </Grid>
-                            </Grid>
-                          </Box>
-
-                          {/* Control Buttons */}
-                          <Box sx={{ width: '100%' }}>
-                            <Typography variant="caption" sx={{ color: '#565f89', fontWeight: 700, display: 'block', mb: 1, textTransform: 'uppercase' }}>
-                              Translate (Step: 10mm)
-                            </Typography>
-                            <Grid container spacing={1} justifyContent="center" alignItems="center">
-                              <Grid item xs={4}></Grid>
-                              <Grid item xs={4}>
-                                <Button 
-                                  variant="outlined" 
-                                  size="small" 
-                                  fullWidth
-                                  onClick={() => handleTranslatePart(selectedPartId, 0, -10)}
-                                  sx={{ color: '#a9b1d6', borderColor: 'rgba(255,255,255,0.1)', fontWeight: 700 }}
-                                >
-                                  ▲ Up
-                                </Button>
-                              </Grid>
-                              <Grid item xs={4}></Grid>
-
-                              <Grid item xs={4}>
-                                <Button 
-                                  variant="outlined" 
-                                  size="small" 
-                                  fullWidth
-                                  onClick={() => handleTranslatePart(selectedPartId, -10, 0)}
-                                  sx={{ color: '#a9b1d6', borderColor: 'rgba(255,255,255,0.1)', fontWeight: 700 }}
-                                >
-                                  ◀ Left
-                                </Button>
-                              </Grid>
-                              <Grid item xs={4}></Grid>
-                              <Grid item xs={4}>
-                                <Button 
-                                  variant="outlined" 
-                                  size="small" 
-                                  fullWidth
-                                  onClick={() => handleTranslatePart(selectedPartId, 10, 0)}
-                                  sx={{ color: '#a9b1d6', borderColor: 'rgba(255,255,255,0.1)', fontWeight: 700 }}
-                                >
-                                  Right ▶
-                                </Button>
-                              </Grid>
-
-                              <Grid item xs={4}></Grid>
-                              <Grid item xs={4}>
-                                <Button 
-                                  variant="outlined" 
-                                  size="small" 
-                                  fullWidth
-                                  onClick={() => handleTranslatePart(selectedPartId, 0, 10)}
-                                  sx={{ color: '#a9b1d6', borderColor: 'rgba(255,255,255,0.1)', fontWeight: 700 }}
-                                >
-                                  ▼ Down
-                                </Button>
-                              </Grid>
-                              <Grid item xs={4}></Grid>
-                            </Grid>
-                          </Box>
-
-                          <Divider sx={{ borderColor: 'rgba(255, 255, 255, 0.06)', my: 2 }} />
-
-                          <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
-                            <Box sx={{ flex: 1 }}>
-                              <Typography variant="caption" sx={{ color: '#565f89', fontWeight: 700, display: 'block', mb: 1, textTransform: 'uppercase' }}>
-                                Rotation Tools
-                              </Typography>
-                              <Box sx={{ display: 'flex', gap: 1 }}>
-                                <Button 
-                                  variant="outlined" 
-                                  size="small" 
-                                  fullWidth
-                                  onClick={() => handleRotatePart(selectedPartId, -90)}
-                                  sx={{ color: '#a9b1d6', borderColor: 'rgba(255,255,255,0.1)', fontWeight: 700, textTransform: 'none' }}
-                                >
-                                  Rotate -90°
-                                </Button>
-                                <Button 
-                                  variant="outlined" 
-                                  size="small" 
-                                  fullWidth
-                                  onClick={() => handleRotatePart(selectedPartId, 90)}
-                                  sx={{ color: '#a9b1d6', borderColor: 'rgba(255,255,255,0.1)', fontWeight: 700, textTransform: 'none' }}
-                                >
-                                  Rotate +90°
-                                </Button>
-                              </Box>
-                            </Box>
-                          </Box>
-
-                          <Divider sx={{ borderColor: 'rgba(255,255,255,0.06)' }} />
-
-                          <Button 
-                            variant="contained" 
-                            color="error"
-                            size="small" 
-                            fullWidth
-                            onClick={() => handleDeletePart(selectedPartId)}
-                            sx={{ bgcolor: '#ef4444', color: '#ffffff', fontWeight: 800, textTransform: 'none', '&:hover': { bgcolor: '#dc2626' } }}
-                          >
-                            🗑️ Delete Placed Part
-                          </Button>
-                        </Box>
-                      );
-                    })()
-                  ) : (
-                    <Button
-                      variant="contained"
-                      fullWidth
-                      disabled={savingLayout || localParts.length === 0 || !isDirty}
-                      onClick={handleSaveLayout}
-                      sx={{
-                        bgcolor: '#ec4899',
-                        fontWeight: 800,
-                        textTransform: 'none',
-                        '&:hover': { bgcolor: '#db2777' },
-                        '&.Mui-disabled': { bgcolor: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.3)' }
-                      }}
-                    >
-                      {savingLayout ? 'Saving Layout...' : 'Save Manual Layout'}
-                    </Button>
-                  )}
-                </Paper>
+                <CoordinateShifter
+                  selectedPartId={selectedPartId}
+                  localParts={localParts}
+                  draggingPartId={draggingPartId}
+                  handleTranslatePart={handleTranslatePart}
+                  handleRotatePart={handleRotatePart}
+                  handleDeletePart={handleDeletePart}
+                  handleSaveLayout={handleSaveLayout}
+                  savingLayout={savingLayout}
+                  isDirty={isDirty}
+                  showSaveButtonWhenNoSelection={true}
+                />
               )}
 
               {/* Export Center V1 */}
@@ -3155,9 +2966,25 @@ export default function Result() {
             borderBottom: '1px solid rgba(255, 255, 255, 0.06)'
           }}
         >
-          <Typography variant="h6" sx={{ fontWeight: 800 }}>
-            Fullscreen Sheet Placement Preview
-          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={() => setIsFullscreenSidebarOpen(!isFullscreenSidebarOpen)}
+              sx={{
+                color: '#a9b1d6',
+                borderColor: 'rgba(255,255,255,0.1)',
+                textTransform: 'none',
+                fontWeight: 700,
+                '&:hover': { borderColor: '#ec4899', color: '#ec4899', bgcolor: 'rgba(236,72,153,0.04)' }
+              }}
+            >
+              {isFullscreenSidebarOpen ? '◀ Hide Sidebar' : '▶ Show Sidebar'}
+            </Button>
+            <Typography variant="h6" sx={{ fontWeight: 800 }}>
+              Fullscreen Sheet Placement Preview
+            </Typography>
+          </Box>
           <IconButton
             onClick={() => setIsFullscreenOpen(false)}
             sx={{
@@ -3230,29 +3057,86 @@ export default function Result() {
             </Box>
           </Box>
 
-          {/* Fullscreen Canvas Viewport */}
-          <Box
-            ref={fullscreenCanvasRef}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
-            sx={{
-              flexGrow: 1,
-              width: '100%',
-              bgcolor: '#090b0e',
-              borderRadius: '8px',
-              overflow: 'hidden',
-              position: 'relative',
-              cursor: isDragging ? 'grabbing' : 'grab',
-              border: '1px solid rgba(255, 255, 255, 0.04)',
-              userSelect: 'none',
-              display: 'flex',
-              justifyContent: 'center',
-              alignItems: 'center',
-            }}
-          >
-            {renderLayoutSvg()}
+          {/* Main Editing Surface & Collapsible Sidebar */}
+          <Box sx={{ display: 'flex', flexGrow: 1, width: '100%', gap: 3, overflow: 'hidden' }}>
+            {/* Reusable Sidebar (if toggled open) */}
+            {isFullscreenSidebarOpen && (
+              <EditingSidebar
+                projectFiles={projectFiles}
+                localParts={localParts}
+                selectedLibraryPart={selectedLibraryPart}
+                onSelectLibraryPart={handleSelectLibraryPart}
+                isEditMode={isEditMode}
+                setIsEditMode={setIsEditMode}
+                openIntelligentFillDialog={openIntelligentFillDialog}
+                selectedPartId={selectedPartId}
+                draggingPartId={draggingPartId}
+                handleTranslatePart={handleTranslatePart}
+                handleRotatePart={handleRotatePart}
+                handleDeletePart={handleDeletePart}
+                handleSaveLayout={handleSaveLayout}
+                savingLayout={savingLayout}
+                isDirty={isDirty}
+                canUndo={past.length > 0}
+                canRedo={future.length > 0}
+                onUndo={handleUndo}
+                onRedo={handleRedo}
+                finalizing={finalizing}
+                width={{ xs: '100%', sm: '320px', md: '360px' }}
+                style={{ borderRight: '1px solid rgba(255, 255, 255, 0.06)', pr: 2 }}
+              />
+            )}
+
+            {/* Fullscreen Canvas Viewport */}
+            <Box
+              ref={fullscreenCanvasRef}
+              sx={{
+                flexGrow: 1,
+                bgcolor: '#090b0e',
+                borderRadius: '8px',
+                overflow: 'hidden',
+                position: 'relative',
+                border: '1px solid rgba(255, 255, 255, 0.04)',
+                userSelect: 'none',
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'center',
+              }}
+            >
+              <LayoutCanvas
+                sheetWidth={sheetWidth}
+                sheetHeight={sheetHeight}
+                configuredSheets={configuredSheets}
+                sheetX={sheetX}
+                sheetY={sheetY}
+                placements={localParts}
+                parsedPolygons={parsedPolygons}
+                selectedLibraryPart={selectedLibraryPart}
+                selectedPlacementId={selectedPartId}
+                onSelectPlacement={handleSelectPlacement}
+                hoveredPartId={hoveredPartId}
+                setHoveredPartId={setHoveredPartId}
+                draggingPartId={draggingPartId}
+                setDraggingPartId={setDraggingPartId}
+                zoom={zoom}
+                setZoom={setZoom}
+                pan={pan}
+                setPan={setPan}
+                showGrid={showGrid}
+                isEditMode={isEditMode}
+                onPlacePart={handlePlacePart}
+                onMovePart={handleMovePart}
+                sheetGeometry={sheetGeometry}
+                onDragEnd={handleDragEnd}
+                onRotateSelectedLibraryPart={handleRotateSelectedLibraryPart}
+                onTranslateSelectedPart={handleTranslatePart}
+                onRotateSelectedPart={handleRotatePart}
+                onDeleteSelectedPart={handleDeletePart}
+                onUndo={handleUndo}
+                onRedo={handleRedo}
+                height="100%"
+              />
+            </Box>
           </Box>
         </DialogContent>
       </Dialog>
