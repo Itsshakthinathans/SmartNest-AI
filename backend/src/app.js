@@ -9,6 +9,7 @@ const aiRoutes = require('./routes/aiRoutes');
 const exportRoutes = require('./routes/exportRoutes');
 const copilotRoutes = require('./routes/copilotRoutes');
 const sheetRoutes = require('./routes/sheetRoutes');
+const studioRoutes = require('./routes/studioRoutes');
 
 const app = express();
 
@@ -42,5 +43,6 @@ app.use('/api/ai', aiRoutes);
 app.use('/api/export', exportRoutes);
 app.use('/api/copilot', copilotRoutes);
 app.use('/api/sheets', sheetRoutes);
+app.use('/api/studio', studioRoutes);
 
 module.exports = app;

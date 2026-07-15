@@ -1811,6 +1811,30 @@ export default function Result() {
         </Box>
         <Box sx={{ display: 'flex', gap: 2 }}>
           <Button
+            variant="outlined"
+            onClick={() => {
+              let strategyQuery = '';
+              if (result?.nestingMode === 'multi') {
+                if (selectedLayout === 'layout1') strategyQuery = 'a';
+                else if (selectedLayout === 'layout2') strategyQuery = 'b';
+                else if (selectedLayout === 'layout3') strategyQuery = 'c';
+              }
+              navigate(`/results/${jobId}/studio${strategyQuery ? `?strategy=${strategyQuery}` : ''}`);
+            }}
+            sx={{
+              borderColor: '#0d9488',
+              color: '#0d9488',
+              textTransform: 'none',
+              fontWeight: 700,
+              '&:hover': {
+                bgcolor: 'rgba(13, 148, 136, 0.08)',
+                borderColor: '#0d9488'
+              }
+            }}
+          >
+            Manufacturing Studio
+          </Button>
+          <Button
             variant={isEditMode ? 'contained' : 'outlined'}
             onClick={async () => {
               if (!isEditMode && result?.finalized) {

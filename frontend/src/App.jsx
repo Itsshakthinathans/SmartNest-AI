@@ -10,6 +10,7 @@ import ProjectDetails from './pages/ProjectDetails';
 import ReviewNestJob from './pages/ReviewNestJob';
 import NestingProcessingDashboard from './pages/NestingProcessingDashboard';
 import Result from './pages/Result';
+import ManufacturingStudio from './pages/ManufacturingStudio';
 import Remnants from './pages/Remnants';
 import RemnantDetail from './pages/RemnantDetail';
 import Sheets from './pages/Sheets';
@@ -117,6 +118,7 @@ function App() {
             <Route path="projects/:id/review" element={<ReviewNestJob />} />
             <Route path="results/:jobId/processing" element={<NestingProcessingDashboard />} />
             <Route path="results/:jobId" element={<Result />} />
+            <Route path="results/:jobId/studio" element={<ManufacturingStudio />} />
             <Route path="remnants" element={<Remnants />} />
             <Route path="remnants/:id" element={<RemnantDetail />} />
             <Route path="sheets" element={<Sheets />} />

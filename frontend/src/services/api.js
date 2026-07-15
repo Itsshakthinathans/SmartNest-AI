@@ -180,6 +180,14 @@ export const api = {
     return response.data;
   },
 
+  // Manufacturing Studio
+  getToolpath: async (jobId, strategy = '') => {
+    const response = await apiClient.get(`/studio/toolpath/${jobId}`, {
+      params: strategy ? { strategy } : {}
+    });
+    return response.data;
+  },
+
   // Sheets Inventory
   getSheets: async () => {
     const response = await apiClient.get('/sheets');
