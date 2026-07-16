@@ -17,7 +17,7 @@ import {
   TableRow,
   Chip
 } from '@mui/material';
-import { ArrowBack as BackIcon, PrecisionManufacturing as StudioIcon } from '@mui/icons-material';
+import { ArrowBack as BackIcon, PrecisionManufacturing as StudioIcon, Download as DownloadIcon } from '@mui/icons-material';
 import api from '../services/api';
 import SheetExplorer from '../components/SheetExplorer';
 import StudioCanvas from '../components/StudioCanvas';
@@ -32,10 +32,70 @@ export default function ManufacturingStudio() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   
+  // Optimization Toggle states (Phase 3)
+  const [clcEnabled, setClcEnabled] = useState(true);
+  const [chainEnabled, setChainEnabled] = useState(true);
+  const [pierceEnabled, setPierceEnabled] = useState(true);
+
   // Service response states
   const [toolpaths, setToolpaths] = useState([]);
   const [activeProfile, setActiveProfile] = useState(null);
   const [activeProfileKey, setActiveProfileKey] = useState('standard');
+  const [downloadingGCode, setDownloadingGCode] = useState(false);
+
+  const handleDownloadGCode = async () => {
+    try {
+      setDownloadingGCode(true);
+      const response = await api.downloadGCode(
+        jobId,
+        strategy,
+        selectedSheetIdx,
+        activeProfileKey,
+        clcEnabled,
+        chainEnabled,
+        pierceEnabled
+      );
+
+      let filename = `SN_JOB${jobId}_SHEET${String(selectedSheetIdx + 1).padStart(2, '0')}_${activeProfileKey}.gcode`;
+      const disposition = response.headers['content-disposition'];
+      if (disposition && disposition.indexOf('attachment') !== -1) {
+        const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/;
+        const matches = filenameRegex.exec(disposition);
+        if (matches != null && matches[1]) {
+          filename = matches[1].replace(/['"]/g, '');
+        }
+      }
+
+      const blob = new Blob([response.data], { type: response.headers['content-type'] || 'text/plain' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('[ManufacturingStudio] Failed to download G-code:', err);
+      if (err.response?.data instanceof Blob) {
+        const reader = new FileReader();
+        reader.onload = () => {
+          try {
+            const parsed = JSON.parse(reader.result);
+            alert(`Failed to download G-code: ${parsed.error || parsed.message}`);
+          } catch (e) {
+            alert('Failed to download G-code: Translation validation failed.');
+          }
+        };
+        reader.readAsText(err.response.data);
+      } else {
+        alert(err.response?.data?.message || err.message || 'Failed to download G-code.');
+      }
+    } finally {
+      setDownloadingGCode(false);
+    }
+  };
 
   // Playback states (FSM driven)
   const [selectedSheetIdx, setSelectedSheetIdx] = useState(0);
@@ -54,7 +114,7 @@ export default function ManufacturingStudio() {
     try {
       setLoading(true);
       setError(null);
-      const res = await api.getToolpath(jobId, strategy);
+      const res = await api.getToolpath(jobId, strategy, clcEnabled, chainEnabled, pierceEnabled);
       if (res.success) {
         setToolpaths(res.toolpaths || []);
         setActiveProfile(res.activeMachineProfile);
@@ -72,7 +132,7 @@ export default function ManufacturingStudio() {
 
   useEffect(() => {
     fetchToolpathData();
-  }, [jobId, strategy]);
+  }, [jobId, strategy, clcEnabled, chainEnabled, pierceEnabled]);
 
   if (loading) {
     return (
@@ -117,14 +177,32 @@ export default function ManufacturingStudio() {
             Toolpath generation, rapid movement optimizer, and animated fabrication sequencing
           </Typography>
         </Box>
-        <Button
-          variant="outlined"
-          startIcon={<BackIcon />}
-          onClick={() => navigate(`/results/${jobId}${strategy ? `?strategy=${strategy}` : ''}`)}
-          sx={{ borderColor: 'rgba(255,255,255,0.1)', color: '#a9b1d6', textTransform: 'none', fontWeight: 700 }}
-        >
-          Back to Layout
-        </Button>
+        <Box sx={{ display: 'flex', gap: 2 }}>
+          <Button
+            variant="contained"
+            color="primary"
+            startIcon={downloadingGCode ? <CircularProgress size={16} color="inherit" /> : <DownloadIcon />}
+            onClick={handleDownloadGCode}
+            disabled={downloadingGCode || !activeSheet}
+            sx={{
+              bgcolor: '#0d9488',
+              '&:hover': { bgcolor: '#0f766e' },
+              textTransform: 'none',
+              fontWeight: 700,
+              borderRadius: '8px'
+            }}
+          >
+            {downloadingGCode ? 'Generating...' : 'Download G-Code'}
+          </Button>
+          <Button
+            variant="outlined"
+            startIcon={<BackIcon />}
+            onClick={() => navigate(`/results/${jobId}${strategy ? `?strategy=${strategy}` : ''}`)}
+            sx={{ borderColor: 'rgba(255,255,255,0.1)', color: '#a9b1d6', textTransform: 'none', fontWeight: 700, borderRadius: '8px' }}
+          >
+            Back to Layout
+          </Button>
+        </Box>
       </Box>
 
       {/* Main Grid Workspace */}
@@ -161,7 +239,7 @@ export default function ManufacturingStudio() {
 
         {/* Right Column: Metrics Panel */}
         <Grid item xs={12} md={3}>
-          <Box sx={{ height: '600px' }}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5 }}>
             <StudioMetricsPanel
               metrics={activeMetrics}
               qualityScore={activeQualityScore}
@@ -170,6 +248,14 @@ export default function ManufacturingStudio() {
               onProfileChange={setActiveProfileKey}
               availableProfiles={availableProfiles}
               recommendations={activeRecommendations}
+              clcEnabled={clcEnabled}
+              setClcEnabled={setClcEnabled}
+              chainEnabled={chainEnabled}
+              setChainEnabled={setChainEnabled}
+              textChaining="Chain Cutting"
+              pierceEnabled={pierceEnabled}
+              setPierceEnabled={setPierceEnabled}
+              savings={activeProfileData ? activeProfileData.savings : null}
             />
           </Box>
         </Grid>

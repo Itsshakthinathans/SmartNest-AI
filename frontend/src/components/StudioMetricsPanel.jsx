@@ -11,7 +11,9 @@ import {
   MenuItem,
   LinearProgress,
   Alert,
-  AlertTitle
+  AlertTitle,
+  Checkbox,
+  FormControlLabel
 } from '@mui/material';
 
 export default function StudioMetricsPanel({
@@ -21,7 +23,14 @@ export default function StudioMetricsPanel({
   activeProfileKey,
   onProfileChange,
   availableProfiles = {},
-  recommendations = []
+  recommendations = [],
+  clcEnabled = true,
+  setClcEnabled,
+  chainEnabled = true,
+  setChainEnabled,
+  pierceEnabled = true,
+  setPierceEnabled,
+  savings = null
 }) {
   if (!metrics) return null;
 
@@ -45,13 +54,16 @@ export default function StudioMetricsPanel({
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, height: '100%' }}>
-      {/* 0. Optimization Profile Selector */}
+      {/* 0. Optimization Profile Selector & Toggles */}
       <Paper
         sx={{
           p: 2,
           bgcolor: '#0f1319',
           border: '1px solid rgba(255,255,255,0.05)',
-          borderRadius: '12px'
+          borderRadius: '12px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 1.5
         }}
       >
         <FormControl fullWidth size="small" variant="outlined">
@@ -81,6 +93,59 @@ export default function StudioMetricsPanel({
             ))}
           </Select>
         </FormControl>
+
+        <Divider sx={{ borderColor: 'rgba(255,255,255,0.05)' }} />
+
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={clcEnabled}
+                onChange={(e) => setClcEnabled(e.target.checked)}
+                size="small"
+                sx={{
+                  color: '#565f89',
+                  '&.Mui-checked': {
+                    color: '#0d9488'
+                  }
+                }}
+              />
+            }
+            label={<Typography sx={{ color: '#a9b1d6', fontSize: '0.75rem', fontWeight: 600 }}>Common-Line Cutting</Typography>}
+          />
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={chainEnabled}
+                onChange={(e) => setChainEnabled(e.target.checked)}
+                size="small"
+                sx={{
+                  color: '#565f89',
+                  '&.Mui-checked': {
+                    color: '#0d9488'
+                  }
+                }}
+              />
+            }
+            label={<Typography sx={{ color: '#a9b1d6', fontSize: '0.75rem', fontWeight: 600 }}>Chain Cutting</Typography>}
+          />
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={pierceEnabled}
+                onChange={(e) => setPierceEnabled(e.target.checked)}
+                size="small"
+                sx={{
+                  color: '#565f89',
+                  '&.Mui-checked': {
+                    color: '#0d9488'
+                  }
+                }}
+              />
+            }
+            label={<Typography sx={{ color: '#a9b1d6', fontSize: '0.75rem', fontWeight: 600 }}>Pierce Optimization</Typography>}
+          />
+        </Box>
       </Paper>
 
       {/* 1. Manufacturing Quality & Continuity Scores */}
@@ -147,11 +212,7 @@ export default function StudioMetricsPanel({
           p: 2.5,
           bgcolor: '#0f1319',
           border: '1px solid rgba(255, 255, 255, 0.05)',
-          borderRadius: '12px',
-          flex: 1,
-          overflowY: 'auto',
-          maxHeight: 280,
-          scrollbarWidth: 'thin'
+          borderRadius: '12px'
         }}
       >
         <Typography variant="subtitle2" sx={{ color: '#565f89', fontWeight: 800, textTransform: 'uppercase', mb: 1.5, fontSize: '0.75rem' }}>
@@ -200,9 +261,59 @@ export default function StudioMetricsPanel({
         </Box>
       </Paper>
 
+      {/* 2.5 Manufacturing Savings Summary */}
+      {savings && (savings.travelDistanceSavedMm > 0 || savings.piercesSavedCount > 0 || savings.cuttingLengthSavedMm > 0 || savings.cycleTimeSavedSeconds > 0) && (
+        <Paper
+          sx={{
+            p: 2,
+            bgcolor: 'rgba(16, 185, 129, 0.05)',
+            border: '1px solid rgba(16, 185, 129, 0.2)',
+            borderRadius: '12px'
+          }}
+        >
+          <Typography variant="subtitle2" sx={{ color: '#10b981', fontWeight: 800, textTransform: 'uppercase', mb: 1.5, fontSize: '0.75rem' }}>
+            Manufacturing Savings Summary
+          </Typography>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+            {savings.travelDistanceSavedMm > 0 && (
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Typography sx={{ color: '#a9b1d6', fontSize: '0.75rem' }}>Rapid Travel Saved</Typography>
+                <Typography sx={{ color: '#ffffff', fontSize: '0.75rem', fontWeight: 'bold' }}>
+                  {formatLength(savings.travelDistanceSavedMm)}
+                </Typography>
+              </Box>
+            )}
+            {savings.piercesSavedCount > 0 && (
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Typography sx={{ color: '#a9b1d6', fontSize: '0.75rem' }}>Pierces Eliminated</Typography>
+                <Typography sx={{ color: '#ffffff', fontSize: '0.75rem', fontWeight: 'bold' }}>
+                  {savings.piercesSavedCount} cycles
+                </Typography>
+              </Box>
+            )}
+            {savings.cuttingLengthSavedMm > 0 && (
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Typography sx={{ color: '#a9b1d6', fontSize: '0.75rem' }}>Cutting Path Saved</Typography>
+                <Typography sx={{ color: '#ffffff', fontSize: '0.75rem', fontWeight: 'bold' }}>
+                  {formatLength(savings.cuttingLengthSavedMm)}
+                </Typography>
+              </Box>
+            )}
+            {savings.cycleTimeSavedSeconds > 0 && (
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Typography sx={{ color: '#a9b1d6', fontSize: '0.75rem' }}>Cycle Time Saved</Typography>
+                <Typography sx={{ color: '#10b981', fontSize: '0.75rem', fontWeight: 'bold' }}>
+                  {formatTime(savings.cycleTimeSavedSeconds)}
+                </Typography>
+              </Box>
+            )}
+          </Box>
+        </Paper>
+      )}
+
       {/* 3. Structured Recommendations & Warnings Section */}
       {recommendations.length > 0 && (
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, maxHeight: 180, overflowY: 'auto', scrollbarWidth: 'thin' }}>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
           {recommendations.map((rec, idx) => (
             <Alert
               key={idx}
@@ -230,6 +341,54 @@ export default function StudioMetricsPanel({
             </Alert>
           ))}
         </Box>
+      )}
+
+      {/* 4. Active Machine Config Profile */}
+      {activeProfile && (
+        <Paper
+          sx={{
+            p: 2.5,
+            bgcolor: '#0f1319',
+            border: '1px solid rgba(255, 255, 255, 0.05)',
+            borderRadius: '12px'
+          }}
+        >
+          <Typography variant="subtitle2" sx={{ color: '#565f89', fontWeight: 800, textTransform: 'uppercase', mb: 1.5, fontSize: '0.75rem' }}>
+            Machine Config Profile
+          </Typography>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.2 }}>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Typography variant="caption" sx={{ color: '#a9b1d6' }}>Gantry Feed Rate</Typography>
+              <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 700 }}>
+                {activeProfile.feedRate ? `${activeProfile.feedRate} mm/min` : 'N/A'}
+              </Typography>
+            </Box>
+            <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
+            
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Typography variant="caption" sx={{ color: '#a9b1d6' }}>Rapid Traverse Speed</Typography>
+              <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 700 }}>
+                {activeProfile.traverseSpeed ? `${activeProfile.traverseSpeed} mm/min` : 'N/A'}
+              </Typography>
+            </Box>
+            <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
+
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Typography variant="caption" sx={{ color: '#a9b1d6' }}>Pierce Cycle Time</Typography>
+              <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 700 }}>
+                {activeProfile.pierceTime ? `${activeProfile.pierceTime}s` : 'N/A'}
+              </Typography>
+            </Box>
+            <Divider sx={{ borderColor: 'rgba(255,255,255,0.04)' }} />
+
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Typography variant="caption" sx={{ color: '#a9b1d6' }}>Chaining Max Radius</Typography>
+              <Typography variant="caption" sx={{ color: '#ffffff', fontWeight: 700 }}>
+                {activeProfile.chainingThresholdDistance ? `${activeProfile.chainingThresholdDistance} mm` : 'N/A'}
+              </Typography>
+            </Box>
+          </Box>
+        </Paper>
       )}
     </Box>
   );

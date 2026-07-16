@@ -120,14 +120,14 @@ export default function StudioCanvas({
       lastTimeRef.current = time;
 
       if (operations.length === 0) {
-        setPlayState('COMPLETED');
+        setTimeout(() => setPlayState('COMPLETED'), 0);
         return;
       }
 
       setSimState((prev) => {
         let { opIdx, progress, toolhead } = prev;
         if (opIdx >= operations.length) {
-          setPlayState('COMPLETED');
+          setTimeout(() => setPlayState('COMPLETED'), 0);
           return prev;
         }
 
@@ -159,7 +159,7 @@ export default function StudioCanvas({
           nextProgress = 0;
           opIdx += 1;
           if (opIdx >= operations.length) {
-            setPlayState('COMPLETED');
+            setTimeout(() => setPlayState('COMPLETED'), 0);
             const finalOp = operations[operations.length - 1];
             const finalPt = finalOp.points[finalOp.points.length - 1];
             return {
@@ -311,10 +311,15 @@ export default function StudioCanvas({
     const cutOps = operations.filter(op => op.type === 'CUT');
     return cutOps.map((op, idx) => {
       const isOuter = op.metadata?.contourType === 'outer';
-      const pathData = op.points.map((pt, i) => `${i === 0 ? 'M' : 'L'} ${pt.x} ${pt.y}`).join(' ') + ' Z';
+      
+      const pStart = op.points[0];
+      const pEnd = op.points[op.points.length - 1];
+      const isClosed = pStart && pEnd && Math.sqrt(Math.pow(pStart.x - pEnd.x, 2) + Math.pow(pStart.y - pEnd.y, 2)) < 0.2;
+      
+      const pathData = op.points.map((pt, i) => `${i === 0 ? 'M' : 'L'} ${pt.x} ${pt.y}`).join(' ') + (isClosed ? ' Z' : '');
       
       const opIdxInOperations = operations.indexOf(op);
-      const isCompleted = opIdxInOperations < simState.opIdx;
+      const isCompleted = playState === 'COMPLETED' || opIdxInOperations < simState.opIdx;
       
       const strokeColor = isCompleted ? '#06b6d4' : '#991b1b';
       const fillColor = isOuter 
@@ -323,7 +328,9 @@ export default function StudioCanvas({
 
       return (
         <path
-          key={idx}
+          key={op.opId}
+          data-opid={op.opId}
+          data-completed={isCompleted ? "true" : "false"}
           d={pathData}
           fill={fillColor}
           stroke={strokeColor}
@@ -340,16 +347,50 @@ export default function StudioCanvas({
     return travOps.map((op, idx) => {
       const p1 = op.points[0];
       const p2 = op.points[1];
+      
+      const opIdxInOperations = operations.indexOf(op);
+      const isCompleted = playState === 'COMPLETED' || opIdxInOperations < simState.opIdx;
+      const strokeColor = isCompleted ? 'rgba(6, 182, 212, 0.25)' : 'rgba(247, 118, 142, 0.45)';
+      
       return (
         <line
-          key={idx}
+          key={op.opId}
+          data-opid={op.opId}
+          data-completed={isCompleted ? "true" : "false"}
           x1={p1.x}
           y1={p1.y}
           x2={p2.x}
           y2={p2.y}
-          stroke="rgba(247, 118, 142, 0.45)"
+          stroke={strokeColor}
           strokeWidth="1.2"
           strokeDasharray="4,4"
+        />
+      );
+    });
+  };
+
+  // Draw lead-in and lead-out paths
+  const renderLeadPaths = () => {
+    const leadOps = operations.filter(op => op.type === 'LEAD_IN' || op.type === 'LEAD_OUT');
+    return leadOps.map((op, idx) => {
+      const p1 = op.points[0];
+      const p2 = op.points[1];
+      
+      const opIdxInOperations = operations.indexOf(op);
+      const isCompleted = playState === 'COMPLETED' || opIdxInOperations < simState.opIdx;
+      const strokeColor = isCompleted ? '#06b6d4' : '#b58543'; // warm gold/brown when unfinished, cyan when completed
+      
+      return (
+        <line
+          key={op.opId}
+          data-opid={op.opId}
+          data-completed={isCompleted ? "true" : "false"}
+          x1={p1.x}
+          y1={p1.y}
+          x2={p2.x}
+          y2={p2.y}
+          stroke={strokeColor}
+          strokeWidth="1.0"
         />
       );
     });
@@ -361,10 +402,10 @@ export default function StudioCanvas({
     return cutOps.map((op, idx) => {
       const centroid = getCentroid(op.points.slice(0, -1));
       const opIdxInOperations = operations.indexOf(op);
-      const isCompleted = opIdxInOperations < simState.opIdx;
+      const isCompleted = playState === 'COMPLETED' || opIdxInOperations < simState.opIdx;
       const color = isCompleted ? '#06b6d4' : '#991b1b';
       return (
-        <g key={idx} transform={`translate(${centroid.x}, ${centroid.y})`}>
+        <g key={op.opId} data-opid={op.opId} data-completed={isCompleted ? "true" : "false"} transform={`translate(${centroid.x}, ${centroid.y})`}>
           <circle r="9" fill="#0f1319" stroke={color} strokeWidth="1.2" />
           <text
             textAnchor="middle"
@@ -506,6 +547,9 @@ export default function StudioCanvas({
 
             {/* 2. Traverse paths */}
             {renderTraversePaths()}
+
+            {/* 2.5 Lead paths */}
+            {renderLeadPaths()}
 
             {/* 3. Cut parts */}
             {renderCutContours()}

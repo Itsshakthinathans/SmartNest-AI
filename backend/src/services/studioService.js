@@ -176,7 +176,7 @@ const { executeOptimizationPipeline } = require('./optimizationPipeline');
 /**
  * Sequencing & Toolpath Engine: builds ordered operations
  */
-async function generateToolpathData(jobId, strategy) {
+async function generateToolpathData(jobId, strategy, clcEnabled = true, chainEnabled = true, pierceEnabled = true) {
   ensureEnvironment();
   
   // 1. Fetch Job and Project properties
@@ -223,7 +223,8 @@ async function generateToolpathData(jobId, strategy) {
     traverseSpeed: 12000, // 200 mm/s rapid travel
     pierceTime: 0.8,
     leadInLength: 2.0,
-    leadOutLength: 1.0
+    leadOutLength: 1.0,
+    chainingThresholdDistance: 15.0 // configurable chaining distance in mm
   };
 
   const sheetToolpaths = [];
@@ -277,7 +278,10 @@ async function generateToolpathData(jobId, strategy) {
       const optimization = executeOptimizationPipeline({
         sheetParts,
         materialType: project.material_type,
-        machineConfig
+        machineConfig,
+        clcEnabled,
+        chainEnabled,
+        pierceEnabled
       });
 
       sheetToolpaths.push({
@@ -305,7 +309,8 @@ async function generateToolpathData(jobId, strategy) {
     traverseSpeed: machineConfig.traverseSpeed,
     pierceTime: machineConfig.pierceTime,
     leadInLength: machineConfig.leadInLength,
-    leadOutLength: machineConfig.leadOutLength
+    leadOutLength: machineConfig.leadOutLength,
+    chainingThresholdDistance: machineConfig.chainingThresholdDistance
   };
 
   return {
@@ -328,7 +333,7 @@ function getPolygonPerimeter(polygon) {
 /**
  * Cache Manager: handles layout toolpath files, validating hashes to invalid cache
  */
-async function getCachedToolpath(jobId, strategy) {
+async function getCachedToolpath(jobId, strategy, clcEnabled = true, chainEnabled = true, pierceEnabled = true) {
   const jobRes = await pool.query('SELECT project_id, output_file, nesting_mode, strategy_results FROM nest_jobs WHERE id = $1', [jobId]);
   if (jobRes.rows.length === 0) return null;
   const job = jobRes.rows[0];
@@ -351,8 +356,9 @@ async function getCachedToolpath(jobId, strategy) {
   const layout = JSON.parse(rawData);
   const currentPlacementsHash = crypto.createHash('sha256').update(JSON.stringify(layout.placements || [])).digest('hex');
 
-  // Verify cached toolpath JSON file
-  const studioCacheFile = jsonPath.replace('.json', `_studio_toolpath.json`);
+  // Verify cached toolpath JSON file with optimization configurations suffix
+  const optSuffix = `_clc${clcEnabled}_ch${chainEnabled}_p${pierceEnabled}`;
+  const studioCacheFile = jsonPath.replace('.json', `_studio_toolpath${optSuffix}.json`);
   if (fs.existsSync(studioCacheFile)) {
     try {
       const cacheRaw = fs.readFileSync(studioCacheFile, 'utf8');
@@ -366,7 +372,7 @@ async function getCachedToolpath(jobId, strategy) {
 
       // Cache hits if SHA-256 layouts are identical and cache is not corrupt
       if (cachedData.layoutHash === currentPlacementsHash && !isCorruptCache) {
-        console.log(`[StudioService] Cache HIT for Job #${jobId} (Strategy: ${strategy || 'default'}).`);
+        console.log(`[StudioService] Cache HIT for Job #${jobId} (Strategy: ${strategy || 'default'}, ${optSuffix}).`);
         return cachedData;
       } else {
         console.log(`[StudioService] Cache MISMATCH/STALE/CORRUPT for Job #${jobId}. Invalidating cached toolpath.`);
@@ -378,7 +384,7 @@ async function getCachedToolpath(jobId, strategy) {
 
   // Recalculate
   console.log(`[StudioService] Computing toolpath details for Job #${jobId}...`);
-  const result = await generateToolpathData(jobId, strategy);
+  const result = await generateToolpathData(jobId, strategy, clcEnabled, chainEnabled, pierceEnabled);
 
   // Save to Cache
   try {
@@ -392,5 +398,7 @@ async function getCachedToolpath(jobId, strategy) {
 }
 
 module.exports = {
-  getCachedToolpath
+  getCachedToolpath,
+  getPartGeometry,
+  getSheetGeometry
 };

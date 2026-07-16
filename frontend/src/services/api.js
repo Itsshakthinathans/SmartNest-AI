@@ -181,11 +181,30 @@ export const api = {
   },
 
   // Manufacturing Studio
-  getToolpath: async (jobId, strategy = '') => {
+  getToolpath: async (jobId, strategy = '', clc = true, chaining = true, pierceOpt = true) => {
     const response = await apiClient.get(`/studio/toolpath/${jobId}`, {
-      params: strategy ? { strategy } : {}
+      params: {
+        strategy,
+        clc,
+        chaining,
+        pierceOpt
+      }
     });
     return response.data;
+  },
+
+  downloadGCode: async (jobId, strategy = '', sheetIdx = 0, profileKey = 'standard', clc = true, chaining = true, pierceOpt = true) => {
+    return apiClient.get(`/studio/gcode/${jobId}`, {
+      params: {
+        strategy,
+        sheetIdx,
+        profileKey,
+        clc,
+        chaining,
+        pierceOpt
+      },
+      responseType: 'blob'
+    });
   },
 
   // Sheets Inventory

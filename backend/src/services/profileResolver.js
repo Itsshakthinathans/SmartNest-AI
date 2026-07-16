@@ -12,9 +12,9 @@ const PROFILES = {
   heatBalanced: {
     name: 'Heat Balanced',
     weights: {
-      heat: 2.0,       // Dominant thermal factor
-      travel: 0.02,    // Extremely low travel index allows jumping across the sheet
-      continuity: 0.1,
+      heat: 1.0,       // Balanced thermal factor
+      travel: 1.2,    // Strong travel penalty to preserve medium range transitions
+      continuity: 0.4,
       time: 0.0
     }
   },
