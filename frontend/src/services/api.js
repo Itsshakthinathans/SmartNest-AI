@@ -193,7 +193,7 @@ export const api = {
     return response.data;
   },
 
-  downloadGCode: async (jobId, strategy = '', sheetIdx = 0, profileKey = 'standard', clc = true, chaining = true, pierceOpt = true) => {
+  downloadGCode: async (jobId, strategy = '', sheetIdx = 0, profileKey = 'standard', clc = true, chaining = true, pierceOpt = true, machineProfile = 'generic') => {
     return apiClient.get(`/studio/gcode/${jobId}`, {
       params: {
         strategy,
@@ -201,7 +201,8 @@ export const api = {
         profileKey,
         clc,
         chaining,
-        pierceOpt
+        pierceOpt,
+        machineProfile
       },
       responseType: 'blob'
     });

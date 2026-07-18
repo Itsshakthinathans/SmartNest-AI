@@ -4,15 +4,8 @@
  * Performs operation sanity checking and generated G-code validation.
  */
 
-const POST_PROCESSOR_CONFIG = {
-  name: 'Generic RS-274',
-  toolOnCommand: 'M03',
-  toolOffCommand: 'M05',
-  unitsCommand: 'G21', // Metric (mm)
-  coordModeCommand: 'G90', // Absolute Positioning
-  programEndCommand: 'M30',
-  extension: 'gcode'
-};
+const { MACHINE_PROFILES } = require('./machineProfiles');
+const POST_PROCESSOR_CONFIG = MACHINE_PROFILES.generic;
 
 /**
  * Validates the input Operations array for shape, type, and coordinate validity.
@@ -57,9 +50,12 @@ function validateOperations(operations) {
 /**
  * Translates operations array into Generic G-Code string.
  */
-function generateGCode({ jobId, sheetIdx, totalSheets, profileKey, operations, machineConfig, projectMetadata }) {
+function generateGCode({ jobId, sheetIdx, totalSheets, profileKey, operations, machineConfig, projectMetadata, machineProfileKey = 'generic' }) {
   // 1. Sanity check input operations first
   validateOperations(operations);
+
+  const activeProfile = MACHINE_PROFILES[machineProfileKey] || MACHINE_PROFILES.generic;
+  console.log(`[genericGCodePostProcessor.generateGCode] Resolved profile key: "${machineProfileKey}", using active profile name: "${activeProfile.name}"`);
 
   const lines = [];
   const timestamp = new Date().toISOString();
@@ -107,6 +103,18 @@ function generateGCode({ jobId, sheetIdx, totalSheets, profileKey, operations, m
     ? `${Math.floor(totalEstimatedTimeSeconds / 60)}m ${Math.round(totalEstimatedTimeSeconds % 60)}s`
     : `${totalEstimatedTimeSeconds.toFixed(1)}s`;
 
+  const toolOn = activeProfile.toolOnCommand + (activeProfile.capabilities.supportsPWM && activeProfile.parameters.laserPower ? ` S${activeProfile.parameters.laserPower}` : '');
+  const toolOff = activeProfile.toolOffCommand;
+
+  let pathBlendingLine = '';
+  if (activeProfile.capabilities.supportsPathBlending) {
+    if (activeProfile.parameters.pathBlendingTolerance !== undefined) {
+      pathBlendingLine = `G64 P${activeProfile.parameters.pathBlendingTolerance} ; Path blending tolerance`;
+    } else if (activeProfile.parameters.constantVelocityMode) {
+      pathBlendingLine = `G64 ; Constant velocity mode`;
+    }
+  }
+
   // 2. Generate Professional Header Comments
   lines.push('; ==================================================================');
   lines.push('; SMARTNEST AI - CNC MANUFACTURING WORKSPACE');
@@ -121,13 +129,16 @@ function generateGCode({ jobId, sheetIdx, totalSheets, profileKey, operations, m
   lines.push(`; Chain Cutting:          ${machineConfig.chainEnabled ? 'Enabled' : 'Disabled'}`);
   lines.push(`; Pierce Optimization:    ${machineConfig.pierceEnabled ? 'Enabled' : 'Disabled'}`);
   lines.push(`; Generation Timestamp:   ${timestamp}`);
-  lines.push(`; Post Processor:         ${POST_PROCESSOR_CONFIG.name} (${POST_PROCESSOR_CONFIG.toolOnCommand}/${POST_PROCESSOR_CONFIG.toolOffCommand})`);
+  lines.push(`; Post Processor:         ${activeProfile.name} (${activeProfile.toolOnCommand}/${activeProfile.toolOffCommand})`);
   lines.push('; ==================================================================');
 
   // 3. Setup Commands (No automatic Homing!)
-  lines.push(`${POST_PROCESSOR_CONFIG.unitsCommand} ; Set units to millimeters`);
-  lines.push(`${POST_PROCESSOR_CONFIG.coordModeCommand} ; Absolute positioning`);
-  lines.push(`${POST_PROCESSOR_CONFIG.toolOffCommand} ; Ensure laser/tool is OFF`);
+  lines.push(`${activeProfile.unitsCommand} ; Set units to millimeters`);
+  lines.push(`${activeProfile.coordModeCommand} ; Absolute positioning`);
+  if (pathBlendingLine) {
+    lines.push(pathBlendingLine);
+  }
+  lines.push(`${toolOff} ; Ensure laser/tool is OFF`);
   lines.push('');
 
   let laserOn = false;
@@ -140,7 +151,7 @@ function generateGCode({ jobId, sheetIdx, totalSheets, profileKey, operations, m
     if (op.type === 'RAPID_MOVE') {
       // Turn laser off prior to rapid travel
       if (laserOn) {
-        lines.push(`${POST_PROCESSOR_CONFIG.toolOffCommand} ; Laser OFF`);
+        lines.push(`${toolOff} ; Laser OFF`);
         laserOn = false;
       }
       const targetPt = op.points[op.points.length - 1];
@@ -149,14 +160,14 @@ function generateGCode({ jobId, sheetIdx, totalSheets, profileKey, operations, m
     else if (op.type === 'PIERCE') {
       // Activate laser at current position
       if (!laserOn) {
-        lines.push(`${POST_PROCESSOR_CONFIG.toolOnCommand} ; Laser ON`);
+        lines.push(`${toolOn} ; Laser ON`);
         laserOn = true;
       }
     }
     else if (op.type === 'LEAD_IN' || op.type === 'CUT' || op.type === 'LEAD_OUT') {
       // Ensure laser is ON for cutting operations
       if (!laserOn) {
-        lines.push(`${POST_PROCESSOR_CONFIG.toolOnCommand} ; Laser ON`);
+        lines.push(`${toolOn} ; Laser ON`);
         laserOn = true;
       }
 
@@ -194,9 +205,9 @@ function generateGCode({ jobId, sheetIdx, totalSheets, profileKey, operations, m
 
   // 6. Program Termination
   if (laserOn) {
-    lines.push(`${POST_PROCESSOR_CONFIG.toolOffCommand} ; Laser OFF`);
+    lines.push(`${toolOff} ; Laser OFF`);
   }
-  lines.push(POST_PROCESSOR_CONFIG.programEndCommand);
+  lines.push(activeProfile.programEndCommand);
 
   return lines.join('\n');
 }
@@ -204,7 +215,7 @@ function generateGCode({ jobId, sheetIdx, totalSheets, profileKey, operations, m
 /**
  * Validates G-Code text content against syntactic and safety rules.
  */
-function validateGCode(gcodeText, sheetWidth, sheetHeight, machineConfig = {}) {
+function validateGCode(gcodeText, sheetWidth, sheetHeight, machineConfig = {}, machineProfileKey = 'generic') {
   if (!gcodeText || typeof gcodeText !== 'string') {
     throw new Error('G-Code content is empty or invalid.');
   }
@@ -226,6 +237,8 @@ function validateGCode(gcodeText, sheetWidth, sheetHeight, machineConfig = {}) {
   const yMin = -tolerance;
   const yMax = parseFloat(sheetHeight || 10000) + tolerance;
 
+  const activeProfile = MACHINE_PROFILES[machineProfileKey] || MACHINE_PROFILES.generic;
+
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i].trim();
     if (!rawLine || rawLine.startsWith(';')) continue;
@@ -234,17 +247,17 @@ function validateGCode(gcodeText, sheetWidth, sheetHeight, machineConfig = {}) {
     const line = rawLine.split(';')[0].trim();
     if (!line) continue;
 
-    // Track laser status commands
-    if (line.includes(POST_PROCESSOR_CONFIG.toolOnCommand)) {
+    // Track laser status commands (Check contains to handle parameter suffixes like S1000)
+    if (line.includes(activeProfile.toolOnCommand)) {
       laserOn = true;
       toolOnCount++;
     }
-    if (line.includes(POST_PROCESSOR_CONFIG.toolOffCommand)) {
+    if (line.includes(activeProfile.toolOffCommand)) {
       laserOn = false;
       toolOffCount++;
     }
 
-    if (line.includes(POST_PROCESSOR_CONFIG.programEndCommand)) {
+    if (line.includes(activeProfile.programEndCommand)) {
       hasProgramEnd = true;
     }
 
@@ -254,7 +267,7 @@ function validateGCode(gcodeText, sheetWidth, sheetHeight, machineConfig = {}) {
 
       // Verify safety constraint: NO active cuts during G00 rapid movements
       if (isRapid && laserOn) {
-        throw new Error(`Safety Violation: Motion code G00 on line ${i + 1} executed while tool was active (${POST_PROCESSOR_CONFIG.toolOnCommand}).`);
+        throw new Error(`Safety Violation: Motion code G00 on line ${i + 1} executed while tool was active (${activeProfile.toolOnCommand}).`);
       }
 
       // Check coordinates X/Y
@@ -289,7 +302,7 @@ function validateGCode(gcodeText, sheetWidth, sheetHeight, machineConfig = {}) {
   }
 
   if (!hasProgramEnd) {
-    throw new Error(`Validation Error: Missing program end termination command (${POST_PROCESSOR_CONFIG.programEndCommand}).`);
+    throw new Error(`Validation Error: Missing program end termination command (${activeProfile.programEndCommand}).`);
   }
 
   return true;

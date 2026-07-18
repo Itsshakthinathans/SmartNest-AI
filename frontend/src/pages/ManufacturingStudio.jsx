@@ -15,7 +15,11 @@ import {
   TableContainer,
   TableHead,
   TableRow,
-  Chip
+  Chip,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem
 } from '@mui/material';
 import { ArrowBack as BackIcon, PrecisionManufacturing as StudioIcon, Download as DownloadIcon } from '@mui/icons-material';
 import api from '../services/api';
@@ -42,6 +46,30 @@ export default function ManufacturingStudio() {
   const [activeProfile, setActiveProfile] = useState(null);
   const [activeProfileKey, setActiveProfileKey] = useState('standard');
   const [downloadingGCode, setDownloadingGCode] = useState(false);
+  const [selectedMachineProfile, setSelectedMachineProfile] = useState('generic');
+
+  const machineProfileDetails = {
+    generic: {
+      name: 'Generic RS-274',
+      ext: '.gcode',
+      desc: 'Machine-independent G-code. Recommended for NCViewer simulation and general CNC compatibility.'
+    },
+    grbl: {
+      name: 'GRBL Laser',
+      ext: '.gcode',
+      desc: 'Generates G-Code compatible with GRBL-based laser controllers.'
+    },
+    linuxcnc: {
+      name: 'LinuxCNC',
+      ext: '.ngc',
+      desc: 'Generates G-Code compatible with LinuxCNC routers and mills.'
+    },
+    mach3: {
+      name: 'Mach3',
+      ext: '.tap',
+      desc: 'Generates G-Code compatible with Mach3-based systems.'
+    }
+  };
 
   const handleDownloadGCode = async () => {
     try {
@@ -53,7 +81,8 @@ export default function ManufacturingStudio() {
         activeProfileKey,
         clcEnabled,
         chainEnabled,
-        pierceEnabled
+        pierceEnabled,
+        selectedMachineProfile
       );
 
       let filename = `SN_JOB${jobId}_SHEET${String(selectedSheetIdx + 1).padStart(2, '0')}_${activeProfileKey}.gcode`;
@@ -177,31 +206,88 @@ export default function ManufacturingStudio() {
             Toolpath generation, rapid movement optimizer, and animated fabrication sequencing
           </Typography>
         </Box>
-        <Box sx={{ display: 'flex', gap: 2 }}>
-          <Button
-            variant="contained"
-            color="primary"
-            startIcon={downloadingGCode ? <CircularProgress size={16} color="inherit" /> : <DownloadIcon />}
-            onClick={handleDownloadGCode}
-            disabled={downloadingGCode || !activeSheet}
-            sx={{
-              bgcolor: '#0d9488',
-              '&:hover': { bgcolor: '#0f766e' },
-              textTransform: 'none',
-              fontWeight: 700,
-              borderRadius: '8px'
-            }}
-          >
-            {downloadingGCode ? 'Generating...' : 'Download G-Code'}
-          </Button>
-          <Button
-            variant="outlined"
-            startIcon={<BackIcon />}
-            onClick={() => navigate(`/results/${jobId}${strategy ? `?strategy=${strategy}` : ''}`)}
-            sx={{ borderColor: 'rgba(255,255,255,0.1)', color: '#a9b1d6', textTransform: 'none', fontWeight: 700, borderRadius: '8px' }}
-          >
-            Back to Layout
-          </Button>
+        <Box sx={{ display: 'flex', gap: 2, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+          {/* Target Controller Selection & Details */}
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+            <FormControl size="small" sx={{ minWidth: 240 }}>
+              <InputLabel id="machine-profile-select-label" sx={{ color: '#0d9488', fontWeight: 'bold' }}>Target Controller</InputLabel>
+              <Select
+                labelId="machine-profile-select-label"
+                id="machine-profile-select"
+                value={selectedMachineProfile}
+                label="Target Controller"
+                onChange={(e) => setSelectedMachineProfile(e.target.value)}
+                sx={{
+                  color: '#ffffff',
+                  bgcolor: '#0f1319',
+                  '& .MuiOutlinedInput-notchedOutline': {
+                    borderColor: 'rgba(13, 148, 136, 0.3)',
+                  },
+                  '&:hover .MuiOutlinedInput-notchedOutline': {
+                    borderColor: '#0d9488',
+                  },
+                  '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                    borderColor: '#0d9488',
+                  }
+                }}
+              >
+                <MenuItem value="generic">Generic RS-274 (Default/Recommended)</MenuItem>
+                <MenuItem value="grbl">GRBL Laser</MenuItem>
+                <MenuItem value="linuxcnc">LinuxCNC</MenuItem>
+                <MenuItem value="mach3">Mach3</MenuItem>
+              </Select>
+            </FormControl>
+
+            {/* Target Controller Description Panel */}
+            <Paper 
+              sx={{ 
+                p: 1.5, 
+                bgcolor: '#0b0e14', 
+                border: '1px solid rgba(255,255,255,0.05)', 
+                borderRadius: '6px',
+                width: 240,
+                mt: 1
+              }}
+            >
+              <Typography variant="caption" sx={{ color: '#0d9488', fontWeight: 800, display: 'block', mb: 0.5 }}>
+                Target: {machineProfileDetails[selectedMachineProfile].name}
+              </Typography>
+              <Typography variant="caption" sx={{ color: '#f7768e', fontWeight: 800, display: 'block', mb: 0.5 }}>
+                Extension: {machineProfileDetails[selectedMachineProfile].ext}
+              </Typography>
+              <Typography variant="caption" sx={{ color: '#a9b1d6', display: 'block', fontSize: '0.7rem', lineHeight: 1.2 }}>
+                Usage: {machineProfileDetails[selectedMachineProfile].desc}
+              </Typography>
+            </Paper>
+          </Box>
+
+          <Box sx={{ display: 'flex', gap: 1.5, mt: 0.5 }}>
+            <Button
+              variant="contained"
+              color="primary"
+              startIcon={downloadingGCode ? <CircularProgress size={16} color="inherit" /> : <DownloadIcon />}
+              onClick={handleDownloadGCode}
+              disabled={downloadingGCode || !activeSheet}
+              sx={{
+                bgcolor: '#0d9488',
+                '&:hover': { bgcolor: '#0f766e' },
+                textTransform: 'none',
+                fontWeight: 700,
+                borderRadius: '8px',
+                height: '40px'
+              }}
+            >
+              {downloadingGCode ? 'Generating...' : 'Download G-Code'}
+            </Button>
+            <Button
+              variant="outlined"
+              startIcon={<BackIcon />}
+              onClick={() => navigate(`/results/${jobId}${strategy ? `?strategy=${strategy}` : ''}`)}
+              sx={{ borderColor: 'rgba(255,255,255,0.1)', color: '#a9b1d6', textTransform: 'none', fontWeight: 700, borderRadius: '8px', height: '40px' }}
+            >
+              Back to Layout
+            </Button>
+          </Box>
         </Box>
       </Box>
 

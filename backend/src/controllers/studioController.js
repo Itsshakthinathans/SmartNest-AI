@@ -1,6 +1,7 @@
 const studioService = require('../services/studioService');
 const genericGCodePostProcessor = require('../services/genericGCodePostProcessor');
 const { pool } = require('../config/database');
+const { MACHINE_PROFILES } = require('../services/machineProfiles');
 
 const getToolpath = async (req, res) => {
   const { jobId } = req.params;
@@ -47,10 +48,20 @@ const getToolpath = async (req, res) => {
 
 const downloadGCode = async (req, res) => {
   const { jobId } = req.params;
-  const { strategy, sheetIdx, profileKey } = req.query;
+  const { strategy, sheetIdx, profileKey, machineProfile } = req.query;
   const clcEnabled = req.query.clc !== 'false';
   const chainEnabled = req.query.chaining !== 'false';
   const pierceEnabled = req.query.pierceOpt !== 'false';
+
+  const machProfileKey = machineProfile || 'generic';
+  console.log(`[StudioController] Received machineProfile query parameter: "${machineProfile}", resolved to: "${machProfileKey}"`);
+  const activePostProfile = MACHINE_PROFILES[machProfileKey];
+  if (!activePostProfile) {
+    return res.status(400).json({
+      success: false,
+      message: `Invalid machine profile: '${machProfileKey}'`
+    });
+  }
 
   if (!jobId) {
     return res.status(400).json({
@@ -118,7 +129,7 @@ const downloadGCode = async (req, res) => {
       materialThickness: project.material_thickness
     };
 
-    // 1. Generate G-Code using Generic RS-274 post processor
+    // 1. Generate G-Code using target Machine Controller post processor
     const gcode = genericGCodePostProcessor.generateGCode({
       jobId: parseInt(jobId, 10),
       sheetIdx: sIdx,
@@ -126,18 +137,20 @@ const downloadGCode = async (req, res) => {
       profileKey: profKey,
       operations,
       machineConfig,
-      projectMetadata
+      projectMetadata,
+      machineProfileKey: machProfileKey
     });
 
-    // 2. Perform safety/integrity verification check
-    genericGCodePostProcessor.validateGCode(gcode, sheetToolpath.sheetWidth, sheetToolpath.sheetHeight, machineConfig);
+    // 2. Perform safety/integrity verification check aligned with target controller
+    genericGCodePostProcessor.validateGCode(gcode, sheetToolpath.sheetWidth, sheetToolpath.sheetHeight, machineConfig, machProfileKey);
 
     // 3. Format professional manufacturing-friendly name
     const normalizedMaterial = (project.material_type || 'Material')
       .replace(/[^a-zA-Z0-9]/g, ''); // alphanumeric only
     const normalizedThickness = parseFloat(project.material_thickness || 1.0).toFixed(2);
     
-    const filename = `SN_JOB${jobId}_SHEET${String(sIdx + 1).padStart(2, '0')}_${profKey}_${normalizedMaterial}_${normalizedThickness}mm.gcode`;
+    const ext = activePostProfile.extension || 'gcode';
+    const filename = `SN_JOB${jobId}_SHEET${String(sIdx + 1).padStart(2, '0')}_${profKey}_${machProfileKey}_${normalizedMaterial}_${normalizedThickness}mm.${ext}`;
 
     // 4. Send response download stream
     res.setHeader('Content-Type', 'text/plain');
