@@ -636,7 +636,7 @@ export default function NestingProcessingDashboard() {
         <Grid item xs={12} md={5}>
           <Stack spacing={4}>
             {/* 1. Interactive Empty Sheet Preview */}
-            <Paper sx={{ p: 3, bgcolor: '#0f1319', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '12px' }}>
+            <Paper sx={{ p: 3, bgcolor: '#0f1319', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '12px' }} data-guide-id="processing-live-canvas">
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
                 <Box>
                   <Typography variant="h6" sx={{ color: '#ffffff', fontWeight: 700 }}>
@@ -708,7 +708,7 @@ export default function NestingProcessingDashboard() {
             </Paper>
 
             {/* 2. Overall Processing Pipeline Stage List */}
-            <Paper sx={{ p: 3, bgcolor: '#0f1319', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '12px' }}>
+            <Paper sx={{ p: 3, bgcolor: '#0f1319', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '12px' }} data-guide-id="processing-pipeline-list">
               <Typography variant="h6" sx={{ color: '#ffffff', fontWeight: 700, mb: 1 }}>
                 Nesting Processing Pipeline
               </Typography>

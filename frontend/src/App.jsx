@@ -14,6 +14,9 @@ import ManufacturingStudio from './pages/ManufacturingStudio';
 import Remnants from './pages/Remnants';
 import RemnantDetail from './pages/RemnantDetail';
 import Sheets from './pages/Sheets';
+import { GuideProvider } from './context/GuideContext';
+import { SmartNestGuide } from './pages/SmartNestGuide';
+import { GuideOverlay } from './components/GuideOverlay';
 
 // Premium industrial dark theme palette configuration
 const theme = createTheme({
@@ -110,20 +113,24 @@ function App() {
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <Router>
-        <Routes>
-          <Route path="/" element={<DashboardLayout />}>
-            <Route index element={<Dashboard />} />
-            <Route path="projects" element={<Projects />} />
-            <Route path="projects/:id" element={<ProjectDetails />} />
-            <Route path="projects/:id/review" element={<ReviewNestJob />} />
-            <Route path="results/:jobId/processing" element={<NestingProcessingDashboard />} />
-            <Route path="results/:jobId" element={<Result />} />
-            <Route path="results/:jobId/studio" element={<ManufacturingStudio />} />
-            <Route path="remnants" element={<Remnants />} />
-            <Route path="remnants/:id" element={<RemnantDetail />} />
-            <Route path="sheets" element={<Sheets />} />
-          </Route>
-        </Routes>
+        <GuideProvider>
+          <GuideOverlay />
+          <Routes>
+            <Route path="/" element={<DashboardLayout />}>
+              <Route index element={<Dashboard />} />
+              <Route path="projects" element={<Projects />} />
+              <Route path="projects/:id" element={<ProjectDetails />} />
+              <Route path="projects/:id/review" element={<ReviewNestJob />} />
+              <Route path="results/:jobId/processing" element={<NestingProcessingDashboard />} />
+              <Route path="results/:jobId" element={<Result />} />
+              <Route path="results/:jobId/studio" element={<ManufacturingStudio />} />
+              <Route path="remnants" element={<Remnants />} />
+              <Route path="remnants/:id" element={<RemnantDetail />} />
+              <Route path="sheets" element={<Sheets />} />
+              <Route path="guide" element={<SmartNestGuide />} />
+            </Route>
+          </Routes>
+        </GuideProvider>
       </Router>
     </ThemeProvider>
   );

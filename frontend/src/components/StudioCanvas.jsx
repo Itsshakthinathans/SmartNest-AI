@@ -436,7 +436,7 @@ export default function StudioCanvas({
     >
       {/* Simulation Controls Top Toolbar */}
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+        <Box data-guide-id="sim-play-control" sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
           {playState === 'PLAYING' ? (
             <Button
               variant="contained"

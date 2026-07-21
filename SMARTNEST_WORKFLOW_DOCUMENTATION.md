@@ -1,654 +1,581 @@
-# 📐 SmartNest AI — Complete Product Workflow & Architecture Documentation
-
-This document provides a comprehensive, start-to-finish engineering explanation of the **SmartNest AI** product architecture, processing pipelines, user journeys, and database schemas. It is written to serve as an authoritative product manual for designing an Interactive Manufacturing Walkthrough (guided tutorial).
+# 📐 SmartNest AI — Definitive Technical Knowledge Document & Architecture Manual
+**Version:** 1.2-Stable  
+**Authoritative System & CAM/Nesting Reference Manual**
 
 ---
 
-## 1. Overall Product Architecture
+## 1. Project Overview
 
-From a user's perspective, SmartNest AI is an industrial CAD/CAM nesting optimization tool that manages raw material inventories, parses vector drawings, computes high-density genetic layouts, refines cutting toolpaths, and exports machine-ready G-code.
+### What SmartNest AI Is
+SmartNest AI is an industrial-grade, web-based CAD/CAM nesting optimization application and inventory management platform. It allows manufacturing operators to upload vector drawing files (CAD files in DXF or SVG formats), dynamically pack them onto sheet metal plates (nesting) using advanced genetic algorithms, manually adjust their positions in an interactive vector editor, compute toolpath optimizations, simulate cutting operations, and download CNC-ready G-code. Additionally, it integrates a closed-loop raw sheet and remnant stock ledger to track and harvest unused material (remnants and scrap) back into warehouse inventory.
 
-The system connects ten primary functional views:
+### Primary Objectives
+* **Minimize Material Waste:** Optimize 2D packing yields using genetic algorithm heuristics.
+* **Reduce Machine Cycle Times:** Minimize idle traverse movement, cutting lengths, and piercing operations via toolpath optimization.
+* **Bridge CAD/CAM with ERP Inventory:** Establish a closed-loop ledger tracking standard raw material consumption and remnants generation/reuse.
+* **Empower Operators with AI:** Deploy Generative AI (Gemini) to serve as a design advisor and optimization copilot on the shop floor.
+
+### Target Users
+* **CNC Machine Operators:** Operators loading G-code, running simulations, and selecting stock sources.
+* **Production Planners / CAD Designers:** Personnel preparing DXF CAD models, defining part queues, and managing inventories.
+* **Shop Managers:** Supervisors tracking plate yields, manufacturing efficiency, material cost margins, and remnants recovery metrics.
+
+### Real-World Workflow
+```
+[CAD Design (DXF)] 
+       ↓ 
+[Upload & Area Calculation] 
+       ↓ 
+[Material & Remnant recommendation] 
+       ↓ 
+[BLF Suitability Check] 
+       ↓ 
+[Background Nesting Worker Run] 
+       ↓ 
+[Comparative Yield Analysis] 
+       ↓ 
+[Optional: Manual Refinement (Canvas Editor)] 
+       ↓ 
+[Layout Finalization & Deduct Stock] 
+       ↓ 
+[Harvest Remnants & Scrap] 
+       ↓ 
+[Manufacturing Studio (CAM Toolpaths)] 
+       ↓ 
+[G-Code Generation & Download] 
+       ↓ 
+[CNC Cutting Machine Execution]
+```
+
+### How SmartNest Differs from ProNest
+SmartNest AI is engineered as a modern, web-native CAD/CAM dashboard that addresses key drawbacks of legacy desktop nesting systems like Hypertherm's ProNest:
+* **Cloud-Native Headless Execution:** Runs nesting optimization within server-side Node.js worker threads rather than requiring expensive desktop hardware keys or local Windows licenses.
+* **Closed-Loop Remnant Genealogy Tree:** Dynamically tracks remnant parent-child relationships and auto-partitions irregular leftover plates into standard rectangular sheets and irregular scrap offcuts, registering them directly in inventory.
+* **AI-Assisted Fabrication Insights:** Integrates an LLM advisor (Gemini) to evaluate placement yields and recommend cost savings, nozzle heat profiles, or design adjustments directly.
+* **No-Install CAD/CAM Workspaces:** Multi-strategy layouts, toolpath animation simulations, and manual canvas drag-and-drop actions operate inside a standard web browser at 60fps.
+
+---
+
+## 2. Complete Architecture
+
+### High-Level System Architecture
+SmartNest AI is built as a decoupled, multi-tiered web application consisting of a React Single-Page Application (SPA) frontend, an Express-based Node.js backend REST API, and a PostgreSQL database.
+
+```mermaid
+flowchart TB
+    subgraph Frontend [React SPA Client]
+        UI[Visual Pages & Panels]
+        Canvas[HTML5 Vector Canvas]
+        APIClient[Axios Client Wrapper]
+    end
+
+    subgraph Backend [Express API Server]
+        Routes[REST Route Handlers]
+        Controllers[Controller Logic]
+        Workers[Worker Threads Pool]
+        NestingService[Nesting Service Core]
+        StudioService[CAM Studio Service]
+        ExportService[PDF/SVG Export Engine]
+    end
+
+    subgraph Dependency [DeepNest Headless Environment]
+        Clipper[Clipper C++ Library]
+        Minkowski[Native Minkowski Sum Addon]
+        Preprocessor[SVG Preprocessor Wrapper]
+    end
+
+    subgraph Storage [Data Store Layer]
+        DB[(PostgreSQL Database)]
+        FS[Uploaded Files & Outputs]
+    end
+
+    UI --> Canvas
+    UI --> APIClient
+    APIClient <-->|HTTP REST / JSON| Routes
+    Routes --> Controllers
+    Controllers --> Workers
+    Workers --> NestingService
+    Controllers --> StudioService
+    Controllers --> ExportService
+    NestingService --> Dependency
+    StudioService --> Dependency
+    Controllers --> DB
+    NestingService --> FS
+    ExportService --> FS
+```
+
+### Frontend Architecture
+* **React & Vite:** The frontend is initialized as a Vite-powered React Single-Page Application.
+* **Material-UI (MUI):** UI layout widgets, dialogs, dropdowns, buttons, and layouts leverage MUI components styled with custom CSS.
+* **HTML5 Canvas Vector Viewports:** Drawing files and layouts are rendered on a responsive, custom 2D canvas supporting multi-touch zooming, panning, and 60fps drag-and-drop coordinates shifting.
+* **Axios API Client:** Client state interactions are mapped through a centralized Axios configuration wrapper (`frontend/src/services/api.js`).
+
+### Backend Architecture
+* **Express Router:** Endpoints are separated into feature-focused routers (files, projects, remnants, nesting, sheets, copilot, studio, guide).
+* **Asynchronous Multi-Worker Pool:** CPU-intensive genetic optimizations are offloaded from the main event loop to dedicated Node.js `worker_threads` (`backend/src/workers/nestingWorker.js`).
+* **Headless DeepNest Environment:** Bypasses heavy desktop UI code by mocking global browser boundaries (such as `window`, `document`, `alert`, and `self`), letting standard Clipper and Minkowski bindings run directly inside server processes.
+
+### DeepNest Integration & Minkowski Addons
+The optimization engine relies on native C++ additions from the `deepnest-next` repository:
+* **`@deepnest/calculate-nfp`:** A native Node.js wrapper executing the C++ Minkowski Sum algorithm to generate exact overlap boundaries (No-Fit Polygons) for irregular shapes.
+* **`@deepnest/svg-preprocessor`:** An SVG parsing library that translates raw paths into normalized polygon vertices.
+* **Clipper C++ Library:** A compiled library executing robust boolean polygon clipping operations (difference, union, intersection) at high scale.
+
+### Geometry Processing Layer
+* **Douglas-Peucker Simplification:** Compresses vertex counts by smoothing curves within a tolerance of 1.5% of the bounding box width/height.
+* **Hierarchy Resolving Engine:** Evaluates clockwise vs counter-clockwise polygon orientations to distinguish outer contours (parent parts) from internal holes/cutouts (child parts).
+* **High-Fidelity Coordinate Preservation:** Caches high-precision geometries separately (`originalPoints` and `originalChildren`) to ensure downstream G-code and SVG outputs retain CAD precision.
+
+### Manufacturing Studio (CAM Engine)
+* **Optimization Pipeline:** Sequences nozzle traverse movements according to weighted factor metrics.
+* **Cutter Compensation (Lead-In/Lead-Out):** Adds auxiliary paths (orange/blue circles and vectors) so toolhead pierce damage occurs outside final part boundaries.
+* **CAM Plugin Adapters:** Inject Common Line Cutting (CLC), continuous Chain Cutting bridges, and Pierce Suppression filters.
+
+### Storage Layer
+* **PostgreSQL Relational DB:** Manages tables for projects, users, files, nesting jobs, standard sheet inventory ledgers, remnants, and audit history logs.
+* **Local Filesystem Store:** Standardizes raw DXF CAD files, preprocessed SVGs, generated layout JSON maps, and compiled G-code files in `backend/src/uploads/` directories.
+
+---
+
+## 3. Complete User Workflow
+
+### Screen 1: Dashboard
+* **Purpose:** High-level summary of active shop floor metrics and folder access.
+* **Inputs:** Search query text.
+* **Outputs:** Metrics cards (Active Projects count, Uploaded CADs count, Completed Runs count), recent projects table.
+* **Navigation:** Sidebar links to Projects, Remnants, Material Inventory, and Guided Tutorials.
+* **State Management:** Local React state `stats` loaded on component mount.
+* **Interaction with Backend:** Executes `GET /api/projects/dashboard/stats` and `GET /api/projects`.
+
+### Screen 2: Workspaces / Projects List
+* **Purpose:** Create, browse, or delete material-specific project folders.
+* **Inputs:** Search text, "Create Project" form modal fields (Name, Description, Material Type dropdown, Thickness number in mm).
+* **Outputs:** Card grid showing metadata, thickness parameters, and creation timestamps.
+* **Navigation:** Clicking "Manage" on a card routes the user to the Project Details view.
+* **State Management:** React state `projects` array and `isModalOpen` boolean flag.
+* **Interaction with Backend:** Executes `POST /api/projects` and `GET /api/projects`.
+
+### Screen 3: Project Details
+* **Purpose:** DXF CAD file uploading and part quantity configuration.
+* **Inputs:** File selector drag-and-drop panel (accepts `.dxf` or `.svg`), Part quantity inputs (integers $\ge 1$).
+* **Outputs:** Parts queue table showing filenames, creation dates, quantity editors, and part surface area calculations.
+* **Navigation:** Clicking "Next" routes the user to the Review page.
+* **State Management:** Redux-like React state updating part queues locally after quantity edits.
+* **Interaction with Backend:** Runs `POST /api/files/upload`, `PUT /api/files/:id/quantity`, and `DELETE /api/files/:id`.
+
+### Screen 4: Review Nest Job
+* **Purpose:** Sheets source planning and Bottom-Left-Fill (BLF) packing simulation checks.
+* **Inputs:** Stock source checkboxes (Stock sheets, Remnants, New Custom plates), Sheet size presets, custom dimensions, selected remnants, Declared Floor Sheets.
+* **Outputs:** Estimated sheet counts, utilization projection bars, feasibility checklist (flags "Too Large" parts), and a mini CAD preview canvas.
+* **Navigation:** Clicking "Generate Nest" routes to Processing view.
+* **State Management:** Coordinates sheets sequences, remnants array, and BLF simulation parameters.
+* **Interaction with Backend:** Call `GET /api/remnants/recommend/:projectId` and `POST /api/remnants/pre-nest/:projectId`.
+
+### Screen 5: Nesting Processing Dashboard
+* **Purpose:** Non-blocking monitoring of active optimization worker stages.
+* **Inputs:** None (automated AJAX timer execution).
+* **Outputs:** Pipeline progress tracker table (9 stages), live canvas showing active parts packing, elapsed time, and optimization status.
+* **Navigation:** Auto-redirects to the Results dashboard upon worker completion.
+* **State Management:** Local progress states refreshed every 1.5 seconds.
+* **Interaction with Backend:** Polls `GET /api/nesting/status/:jobId?progressOnly=true`.
+
+### Screen 6: Comparative Results Dashboard
+* **Purpose:** Side-by-side strategy evaluations, manual adjustments, and exports.
+* **Inputs:** Layout strategy tabs (Compact, Vertical, Horizontal), Gemini advisor toggle.
+* **Outputs:** Canvas showing layout drawings, stats cards (utilization, cutting time, costs, weight, runtimes), layout statistics detail table (13 metrics), and Gemini recommendations.
+* **Navigation:** Routes to Manual Editor or Manufacturing Studio.
+* **State Management:** Strategy toggles update active layout parameters and redraw the canvas.
+* **Interaction with Backend:** Fetch `GET /api/nesting/result/:jobId`, `POST /api/nesting/finalize/:jobId`, and `GET /api/ai/advisor/:jobId`.
+
+### Screen 7: Manual Nesting Editor
+* **Purpose:** Fine-tune nested parts placement on the sheet.
+* **Inputs:** Drag gestures, scroll wheel rotation, text coordinates, keyboard hotkeys.
+* **Outputs:** Canvas with containment boundary alerts (green outline for valid position, red outline for collision).
+* **Navigation:** Exits back to Results page.
+* **State Management:** Undo/Redo stack arrays, placement modifications tracking, and unsaved changes state.
+* **Interaction with Backend:** Runs `POST /api/nesting/layout/validate/:jobId` (Clipper collision) and `PUT /api/nesting/layout/:jobId` (save).
+
+### Screen 8: Manufacturing Studio
+* **Purpose:** CAM simulation, sequencing profiles selection, and G-code compiler.
+* **Inputs:** Target Controller profile, Travel Optimization profile, CLC/Chaining/Pierce optimization switches, simulation speeds (1x, 2x, 5x, 10x).
+* **Outputs:** Simulated traverse/cut vectors animation, step-by-step sequencer log table.
+* **Navigation:** Returns to Results page.
+* **State Management:** Simulation playback clocks, speed dividers, and active profile weights parameters.
+* **Interaction with Backend:** Call `GET /api/studio/toolpath/:jobId` and `GET /api/studio/gcode/:jobId`.
+
+### Screen 9: Remnants Inventory
+* **Purpose:** Search and manage reusable sheet metal remnants and scrap offcuts.
+* **Inputs:** Material type, status, scrap type, and search filters.
+* **Outputs:** Previews list cards, estimated value, and remnant width/height.
+* **Navigation:** Access remnant detail sheets.
+* **State Management:** Pagination state and filters configuration.
+* **Interaction with Backend:** Calls `GET /api/remnants`.
+
+### Screen 10: Remnants Detail Page
+* **Purpose:** Genealogy lineage analysis and project mapping.
+* **Inputs:** Project selection modal details.
+* **Outputs:** Vector remnant outline, dimensions, parent stocks, and children branches flowcharts.
+* **Navigation:** Routes to new project creation or exports remnant as stock sheet boundary to an existing project.
+* **State Management:** Lineage node maps.
+* **Interaction with Backend:** Runs `GET /api/remnants/:id` and `POST /api/projects/create-from-remnant`.
+
+### Screen 11: Material Stock Ledger
+* **Purpose:** Track standard raw plates and audit transactions history.
+* **Inputs:** Stock adjustments forms, location fields, audit reasons texts.
+* **Outputs:** Master warehouse inventory table, stock consumption ledger, remnants history logs, and transaction audit logs.
+* **State Management:** Stock ledger modifications states.
+* **Interaction with Backend:** Calls `GET /api/sheets`, `POST /api/sheets`, `PUT /api/sheets/:id`, `DELETE /api/sheets/:id`, `GET /api/sheets/history`, `GET /api/sheets/remnant-history`, and `GET /api/sheets/audit-logs`.
+
+---
+
+## 4. Feature-by-Feature Analysis
+
+### DXF/SVG Upload & Area Calculation
+* **Upload Drawer:** Handles drag-and-drop CAD files using `multer` on the backend.
+* **Area Calculation:** The system parses DXF drawings, translates contours to SVG paths, extracts vertices, and applies the Shoelace formula (polygon area) via `GeometryUtil.polygonArea()` to determine surface area. The computed area is saved to `uploaded_files.area` in the database.
+
+### Material Inventory & Standard Sheets
+* **Ledger Management:** Operates a warehouse database storing standard sheet dimensions, quantities, and storage locations.
+* **Consumption History:** Finalizing layout runs deducts raw stock and updates historical ledger entries automatically.
+
+### Custom Sheets & Irregular Boundaries
+* Supports nesting directly on irregular boundaries (such as a previously cut remnant plate with complex notches or internal holes).
+* The vector canvas renders custom sheets using SVG `evenodd` fill paths. The genetic solver respects these complex geometries, constraining part placement within the outer boundary while avoiding internal holes.
+
+### Polygon Extraction & Curve Simplification
+* **Polygon Extraction:** Converts curves, lines, and arcs to closed coordinate arrays using the SVG preprocessor.
+* **Douglas-Peucker Simplification:** Runs recursive curve simplification with a tolerance of 1.5% of the bounding box to strip high-density vertices, speed up nesting algorithms, and keep the solver responsive.
+
+### Headless Genetic Optimization
+* Spawns worker threads executing the genetic solver.
+* Mutates sheet order, part placements, and rotations (4 quadrants standard).
+* Minimizes a composite fitness score to pack parts tightly.
+
+### The Three Layout Strategy Types
+1. **Layout 1 (Compact Strategy):** Packs parts into a tight bounding box in the bottom-left corner of the sheet, minimizing the total bounding box area.
+2. **Layout 2 (Vertical Strategy):** Packs parts tightly into vertical strips, minimizing horizontal growth. Employs bounding box height as a secondary tie-breaker. Ideal for preserving long vertical remnants.
+3. **Layout 3 (Horizontal Strategy):** Packs parts tightly into horizontal strips, minimizing vertical growth. Employs bounding box width as a secondary tie-breaker. Ideal for preserving long horizontal remnants.
+
+### Remnant Reuse & Leftover Partitioning
+* **Usable Rectangle Partitioning:** Subtracts nested parts from the sheet boundary using Clipper. It searches the leftover geometry for the largest empty rectangle using a grid solver.
+* **Harvesting Thresholds:** If the rectangle is larger than $50 \times 50\text{ mm}$ and has an area $\ge 5000\text{ mm}^2$, it is registered as an `Available` rectangular remnant.
+* **Scrap Offcuts Recovery:** Leftover segments outside the rectangular boundary are evaluated against the same thresholds. If they pass, they are saved as `Available` irregular scrap. Both standard remnants and scrap reference their parent stock via `parent_remnant_id`, maintaining a complete genealogy tree.
+
+### Manual Editor Canvas & 60fps Checks
+* **Drag-and-Drop Editor:** Translates parts along a 10mm grid. Part rotations are adjusted in 15° steps using the mouse wheel, or by 90° using the `R` key.
+* **60fps Bounding Box Pre-checks:** Client-side canvas code performs rapid bounding box intersection tests against the sheet boundaries and other parts. It highlights valid placements in green and collisions in red.
+* **Authoritative Clipper Check:** Saving layout changes calls backend C++ Clipper routines to perform exact polygonal intersection checks, preventing part overlaps.
+
+### AI Advisor & Optimization Copilot
+* **AI Advisor:** Packages layout metrics (utilization, cutting length, scrap values, cycle time, remnants) and sends them to Gemini (`gemini-2.5-flash`) via the official `@google/genai` SDK. Gemini returns a structured JSON containing design feedback, advantages, and savings estimates.
+* **AI Copilot Sidebar:** Provides an interactive chat workspace where operators can ask optimization questions. It includes a strict keyword filter that rejects out-of-scope queries (e.g. coding, general trivia, weather), returning: `"I can only assist with SmartNest manufacturing and nesting related questions."`
+
+### Scaled Vector & Report Exports
+* **SVG Export:** Generates scaled SVG files with outer sheets, nested part outlines, part numbers, and internal cutouts.
+* **JSON Placements Map:** Exports coordinate mappings (`x`, `y`, `rotation`, `sheetId`, `filename`) for importing layouts into secondary software.
+* **8-Page PDF Report:** Generates a structured PDF layout containing a cover page, individual strategy analysis pages, vector preview drawings, and a side-by-side comparative summary table.
+
+---
+
+## 5. Deep Technical Explanation
+
+### 5.1. Geometry Pipeline
+The geometry pipeline processes CAD drawings to prepare them for nesting:
+
+```mermaid
+flowchart LR
+    DXF[dxf/svg file] --> Parse[SVG path extraction]
+    Parse --> Hierarchy[groupPolygonsByHierarchy]
+    Hierarchy --> Simplify[simplifyPath DP Algorithm]
+    Simplify --> Output[originalPoints vs proxyPoints]
+```
+
+1. **Path Extraction:** Multer handles the file upload. DXF files are sent to the conversion server `https://converter.deepnest.app/convert`, which returns an SVG string.
+2. **Hierarchy Resolving:** `groupPolygonsByHierarchy` analyzes path winding rules (clockwise vs counter-clockwise) to map outer boundaries (parent parts) and internal cutouts (child holes).
+3. **Curve Simplification:** The Douglas-Peucker algorithm simplifies complex curves to speed up nesting:
+   * It calculates the bounding box of the polygon.
+   * Tolerance is set to 1.5% of the bounding box size: `tolerance = Math.max(1.0, max(width, height) * 0.015)`.
+   * It runs the Douglas-Peucker algorithm to simplify the polygon.
+   * Original coordinates are stored separately in `originalPoints` and `originalChildren` to ensure G-code output and visual rendering retain full precision.
+
+### 5.2. Placement Pipeline
+`placeParts` executes bottom-left nesting using Minkowski Sums and Clipper:
+1. **Inner NFP Containment:** Resolves allowable placement boundaries within the sheet container.
+2. **Outer NFP Collision Map:** Calculates No-Fit Polygons (NFP) between placed parts and candidate parts using Minkowski sums to prevent overlaps.
+3. **Clipper Subtract Resolution:** Subtracts outer NFPs from the inner NFP using Clipper:
+   `FinalNFP = InnerNFP - Union(OuterNFPs)`
+   This yields a set of valid coordinates where the candidate part's reference point can be placed without colliding.
+4. **Strategy Optimization Placement:** Selects the best coordinate from the valid candidates based on the active strategy:
+   * **Compact:** Minimizes bounding box area.
+   * **Vertical:** Minimizes `max X` coordinate.
+   * **Horizontal:** Minimizes `max Y` coordinate.
+
+### 5.3. Optimization Pipeline
+Sequences toolpaths on the sheet using a cost-driven nearest-neighbor solver:
+1. **Contour Extraction:** Extracts all internal holes and outer contours as individual cuts.
+2. **Holes-First Constraint Check:** Enforces that all internal holes of a part are cut before the outer boundary is cut. This prevents the part from detaching from the sheet bed, which would cause alignment errors.
+3. **Weighted Cost Solver:** Evaluates candidate cuts by calculating a composite cost score:
+   `Cost = w_heat * normHeat + w_travel * normTravel + w_continuity * normContinuity + w_time * normTime`
+4. **Thermal Dissipation Model:** Evaluates localized heat concentration at candidate centroids based on a decay model of previously cut locations:
+   `Heat = sum( H0 * exp(-lambda * (currentStep - nodeStep)) / (distanceSq + epsilon) )`
+   * `H0` (initial heat), `lambda` (thermal dissipation), and `epsilon` (heat buffer) are material-specific parameters (e.g. Stainless Steel has lower dissipation than Aluminium, so heat spreads slower and lingers longer).
+5. **Continuous Trajectory Scoring:** Evaluates angular direction changes and changes in travel distance jumps to prevent sudden gantry movements.
+
+### 5.4. Manufacturing Pipeline
+Compiles sequenced operations (rapid traverse, pierce, cut) into G-code:
+1. **Common Line Cutting (CLC):** Detects adjacent parts with parallel collinear edges within 2mm alignment tolerance and a minimum overlap of 5mm. It rewrites the geometry to cut the shared edge once, saving cutting time and a pierce operation.
+2. **Chain Cutting:** Connects consecutive part contours with a bridge to cut them in a single continuous movement. The bridge is accepted only if the cutting time of the bridge is less than the travel time plus pierce time:
+   `D_bridge < T_pierce / (1/V_feed - 1/V_traverse)`
+3. **Pierce Optimizer:** Suppresses `PIERCE` and `RAPID_MOVE` operations at bridge connections, allowing the cutter to remain on and continue cutting.
+4. **Post-Processor Dialects:** Translates operations into target G-code dialects (units, coordinates, laser power, path blending, constant velocity).
+
+---
+
+## 6. Optimization Analysis
+
+The table below details the performance benefits and trade-offs of each optimization:
+
+| Optimization | Purpose | Performance Benefit | Trade-offs | Affected Modules |
+| :--- | :--- | :--- | :--- | :--- |
+| **Douglas-Peucker Curve Simplification** | Reduces vertex density on curves. | Speeds up genetic nesting iterations and NFP calculations. | Slight proxy dimensional variance during solver phase. | `nestingService.js` |
+| **NFP Cache database** | Caches Minkowski Sum overlap polygons for part pairs. | Drastically reduces runtime of subsequent nesting runs for identical parts. | Requires cache invalidation on layout modifications. | `nestingService.js`, `activeJobsProgress` |
+| **Holes-First Constraint** | Ensures child holes are cut before outer contours. | Prevents part movement or detachment during cutting, improving quality. | May increase traverse travel distances. | `optimizationEngine.js`, `qualityScoring.js` |
+| **Common Line Cutting (CLC)** | Merges shared edges of adjacent parts. | Saves one pierce operation and reduces cutting length by the shared edge length. | Requires adjacent parts to be parallel and aligned. | `geometryOptimizer.js`, `optimizationPipeline.js` |
+| **Chain Cutting Bridges** | Connects parts with a cut bridge. | Eliminates pierce operations by cutting connected parts in a single pass. | Leaves a small bridge mark on the cut parts. | `chainOptimizer.js`, `pierceOptimizer.js` |
+| **Safety Timeout Watchdog** | Terminates sequencing optimizations if runtime exceeds 2 seconds. | Prevents the API from hanging on complex nesting jobs. | Falls back to the baseline Standard profile. | `optimizationPipeline.js` |
+| **Overtravel Tolerance Checks** | Validates coordinates against sheet boundaries. | Prevents machine damage by catching boundary violations in G-code. | Rejects coordinates that exceed sheet bounds. | `genericGCodePostProcessor.js` |
+
+---
+
+## 7. Manufacturing Studio
+
+### CAM Architecture & Operations Model
+The Manufacturing Studio converts nested layout configurations into CNC machine instructions.
 
 ```mermaid
 flowchart TD
-    Dashboard[1. Dashboard] -->|New Project / View Project| Projects[2. Projects List]
-    Projects -->|Select Project| ProjectDetails[3. Project Details]
-    ProjectDetails -->|Upload DXF & Set Qty| ReviewNest[4. Review Nest Job]
-    ReviewNest -->|Suitability & Material Selection| Prompt[5. Operator Log Prompt]
-    Prompt -->|Start Nesting Job| Processing[6. Nesting Processing Dashboard]
-    Processing -->|On Completed Polling| Results[7. Comparative Results Dashboard]
-    Results -->|Toggle Adjust Mode| ManualEditor[8. Manual Nesting Editor]
-    Results -->|Open Studio| Studio[9. Manufacturing Studio]
-    
-    RemnantsInventory[10. Remnants Inventory] <-->|Genealogy Tree & Workspace Setup| RemnantsDetail[11. Remnants Detail]
-    RemnantsDetail -.->|Route A: Create Project / Route B: Import| ProjectDetails
-    
-    SheetsInventory[12. Material Inventory] <-->|Stock Ledger & Audit Logs| ReviewNest
+    Layout[Layout JSON placements] --> Load[studioService.js Load Geometry]
+    Load --> Sequence[optimizationPipeline.js Sequence Solver]
+    Sequence --> CLC[geometryOptimizer.js CLC Plugin]
+    CLC --> Chain[chainOptimizer.js Bridge Plugin]
+    Chain --> Pierce[pierceOptimizer.js Suppression Filter]
+    Pierce --> Guard[integrityGuard.js Collision Validator]
+    Guard --> Post[genericGCodePostProcessor.js Dialects Compiler]
+    Post --> GCode[Machine-Ready G-Code file]
 ```
 
-### Flow Summary:
-1. **Dashboard & Project Initialization**: The user views global statistics and creates or selects a Project matching the material type and thickness.
-2. **CAD Upload & Queue Preparation**: In **Project Details**, raw `.dxf` vector drawings are uploaded. The system calculates each geometry's surface area. The user specifies quantities for each part.
-3. **Material Source Selection & Feasibility Check**: In **Review Nest Job**, the user determines sheet stock sources (standard stock sheets, remnants, or newly declared sheets). An interactive **Bottom-Left-Fill (BLF)** packing simulator executes instantly to verify capacity and flag overlapping or oversized parts.
-4. **Background Optimization**: The user enters their operator credentials. The backend spawns Node.js **Worker Threads** to calculate three distinct nesting strategy layouts concurrently.
-5. **Nesting Progress Monitoring**: In **Nesting Processing**, the client polls stage updates from the backend every 1.5 seconds while showing a live canvas preview.
-6. **Comparative Yield Analysis & Export**: In **Result**, the user toggles between Layout 1 (Compact), Layout 2 (Vertical Packing), and Layout 3 (Horizontal Packing). The Gemini AI advisor evaluates structural savings. The user exports a printable 8-page PDF manufacturing report, SVG layouts, or JSON coordinate maps.
-7. **Manual Nest Refinement**: Toggling "Adjust Placements" launches the client-side canvas editor. Drag-and-drop actions are checked at 60fps for sheet containment and part-to-part collisions, authorized by the backend **Clipper collision library**.
-8. **Genealogy Partitioning & Lock**: Saving and finalizing the layout triggers the **Parent-Child Partitioning Engine**. Clipper subtraction carves the leftover sheet into usable rectangular remnants and irregular scrap, saving them to inventory as `Available` while marking the parent sheets/remnants as `Consumed`.
-9. **CAM Sequencer & Toolpaths**: In **Manufacturing Studio**, the user selects a target machine controller (Generic RS-274, GRBL Laser, LinuxCNC, or Mach3). They configure toolpath optimizations (Common Line Cutting, Chain Cutting, Pierce Minimization) and download the generated G-code.
+### Lead-In & Lead-Out Parameters
+To prevent piercing damage from spoiling the final part contour:
+* **Lead-In:** Adds a 2.0mm entry path (visualized in blue) starting outside the part boundary and cutting inwards.
+* **Lead-Out:** Adds a 1.0mm exit path (visualized in blue) cutting outwards from the end of the contour.
+
+### Machine Profiles & Post-Processors
+The system supports four machine controller profiles:
+1. **Generic RS-274:** Metric units (G21), absolute positioning (G90), tool start (M03), tool stop (M05), and program end (M30). Generates `.gcode` files.
+2. **GRBL Laser:** Uses dynamic laser power mode (M04) with PWM power control (S1000). Generates `.gcode` files.
+3. **LinuxCNC:** Standard routing G-code supporting path blending tolerances (`G64 P0.1`). Generates `.ngc` files.
+4. **Mach3:** Standard milling G-code supporting constant velocity mode (`G64`). Generates `.tap` files.
 
 ---
 
-## 2. Complete User Journey
+## 8. Project Folder Structure
 
-This section tracks a manufacturing project's lifecycle from beginning to end.
-
-### Step 1: Landing & Dashboard Navigation
-* **Purpose**: Provide a summary of shop-floor nesting performance.
-* **User Actions**: Review metrics cards, browse recent projects, and click **"New Project"**.
-* **Inputs**: Search query (text).
-* **Outputs**: Global counts (Active Projects, DXF Files, Nesting Jobs Run), and a recent projects table.
-* **Buttons**: `New Project` (navigates to `/projects`), and `View Project` (navigates to `/projects/:id`).
-* **Navigation**: Links to `Dashboard` (`/`), `Projects` (`/projects`), `Remnants` (`/remnants`), and `Material Inventory` (`/sheets`).
-* **Backend Trigger**: `GET /api/projects/dashboard/stats` and `GET /api/projects`.
-* **Validation**: Checks server connectivity; displays a red error alert if the database is offline.
-
-### Step 2: Creating a Project Folder
-* **Purpose**: Group parts of identical material specifications.
-* **User Actions**: Click **"Create Project"** on the Projects page, fill out the modal form, and submit.
-* **Inputs**: Project Name, Description, Material Type (dropdown selection: *Mild Steel*, *Stainless Steel 304*, *Aluminium*, *Copper*, *Brass*), and Thickness (positive decimal number in mm).
-* **Outputs**: A new project record in the database.
-* **Buttons**: `Create Project` (opens dialog), `Cancel` (closes dialog), and `Submit` (saves project).
-* **Validation**:
-  * Project Name is strictly required.
-  * Material Thickness must be a positive number greater than 0.
-* **What Happens Next**: Clicking "Create Project" executes a `POST` request, refreshes the projects grid, and allows the user to select the new card to navigate to `/projects/:id`.
-
-### Step 3: Geometry Uploading & Quantity Control
-* **Purpose**: Parse raw drawings and define quantities.
-* **User Actions**: Drag or select a `.dxf` CAD file, edit the target quantities in the queue, and verify material parameters.
-* **Inputs**: File upload dialog (`.dxf`), and Part quantity field (positive integer).
-* **Outputs**: SVG rendering of parts and database records under `uploaded_files`.
-* **Buttons**: `Next` (proceeds to review page), `Delete` (removes part from queue), and `Select File` (triggers upload).
-* **Backend Trigger**:
-  * `POST /api/files/upload` (Multer handles the file upload, writes it, triggers deepnest's converter at `https://converter.deepnest.app/convert`, saves the `.svg` preview, and calculates surface area).
-  * `PUT /api/files/:id/quantity` (saves edited quantity).
-* **Validation**:
-  * Extension verification (accepts `.dxf` only).
-  * Quantity must be a positive integer $\ge 1$.
-* **What Happens Next**: Clicking `Next` navigates to `/projects/:id/review`. If no files are uploaded, `Next` is disabled.
-
-### Step 4: Material Selection & Pre-Nest Suitability Checks
-* **Purpose**: Map out sheets sequence and run a pre-nest packing test.
-* **User Actions**: Set the base sheet preset dimensions (e.g. *1000x1000*, *2000x1000*, *3000x1500*, or *custom*), declare additional floor sheets, toggle allowed sources, and review the pre-nest suitability check metrics.
-* **Inputs**: Sheet Preset, Custom Width, Custom Height, Allowed Sources checkboxes (*Stock*, *Remnants*, *New Sheets*), and Declared Floor Sheets (width, height, quantity).
-* **Outputs**: Estimated sheets needed, expected utilization percentage, and a feasibility checklist mapping part fits.
-* **Buttons**: `Add Sheet Card` (manual override), `Accept Recommendation`, and `Generate Nest` (triggers operator prompt).
-* **Backend Trigger**:
-  * `GET /api/remnants/recommend/:projectId` (pulls suitable remnants).
-  * `POST /api/remnants/pre-nest/:projectId` (runs bottom-left-fill simulator).
-* **Validation**:
-  * Total configured sheet area must be sufficient for total parts area.
-  * Parts cannot be physically larger than sheet dimensions (warns "Too Large").
-  * Remnants cannot be selected multiple times.
-* **What Happens Next**: Clicking `Generate Nest` opens a dialog prompting for `Operator Name` and `Operator Email`. Submitting triggers `POST /api/nesting/start/:projectId` and redirects to `/results/:jobId/processing`.
-
-### Step 5: Background Nesting & Polling
-* **Purpose**: Offload genetic optimization to worker threads without freezing the main server thread.
-* **User Actions**: Observe progress indicators and wait for completion.
-* **Inputs**: None (automated client-side polling).
-* **Outputs**: Live canvas updates, current pipeline stage status, and elapsed processing time.
-* **Backend Trigger**: `GET /api/nesting/status/:jobId?progressOnly=true` (polled every 1.5 seconds).
-* **Validation**: If the worker thread crashes or returns an error, the pipeline marks the job as `failed` and displays a troubleshooting warning.
-* **What Happens Next**: When status returns `completed`, the client clears timers and redirects to `/results/:jobId`.
-
-### Step 6: Multi-Strategy Layout Results Comparative Dashboard
-* **Purpose**: Compare packing results across three strategies.
-* **User Actions**: Switch layout selection tabs, read AI recommendations, review cost breakdowns, and download exports.
-* **Inputs**: Layout Selection tab, and AI Advisor toggle.
-* **Outputs**: Utilization percentage, scrap recovery values, g-code time, and download links.
-* **Buttons**: `Download Report (PDF)`, `Export Layout (SVG)`, `Export Placements (JSON)`, `Adjust Placements` (launches manual editor), and `Manufacturing Studio` (launches toolpath planner).
-* **Backend Trigger**:
-  * `GET /api/nesting/result/:jobId`.
-  * `GET /api/ai/advisor/:jobId` (Gemini evaluation).
-* **What Happens Next**: Clicking `Manufacturing Studio` routes the user to `/results/:jobId/studio?strategy=a` (or `b`/`c` matching the selected layout).
-
-### Step 7: Manual Nesting Editor
-* **Purpose**: Finely adjust nesting positions.
-* **User Actions**: Drag parts around the sheet, rotate using keyboard or mouse wheel, add/remove parts, click Undo/Redo, and save the layout.
-* **Inputs**: Coordinate inputs, rotation inputs, and canvas drag gestures.
-* **Outputs**: Live containment (green/red outline) and saved placements coordinate lists.
-* **Keyboard Shortcuts**: `R` (rotate 90°), `Delete` / `Backspace` (remove part), and `Esc` (cancel placement preview).
-* **Backend Trigger**:
-  * `PUT /api/nesting/layout/:jobId` (saves placements to database).
-  * `POST /api/nesting/layout/validate/:jobId` (Clipper collision test).
-* **What Happens Next**: User exits editor and returns to Results view.
-
-### Step 8: Layout Finalization
-* **Purpose**: Lock the layout, deduct inventory, and harvest leftovers.
-* **User Actions**: Click **"Finalize Layout"** and confirm the prompt.
-* **Outputs**: Layout state set to `Finalized`. Sheet inventory balances are updated. New remnants are added to stock.
-* **Backend Trigger**: `POST /api/nesting/finalize/:jobId`.
-* **Validation**: Triggers verification ensuring layout is not already finalized. If finalized, warns operator to prevent accidental overrides.
-
-### Step 9: Toolpath Optimization & G-Code Export
-* **Purpose**: Sequence laser head moves and download machine programs.
-* **User Actions**: Pick a Target Controller, choose weight profiles, toggle toolpath optimizations (CLC, chaining, pierce), run the sequencing animation, and download G-code.
-* **Inputs**: Profile Key (dropdown), Target Controller (dropdown), and Optimization checkboxes.
-* **Outputs**: Animated cutter simulation, toolpath sequencer log table, and G-code file.
-* **Buttons**: `Play/Pause/Reset`, `Download G-Code`, and `Back to Layout`.
-* **Backend Trigger**: `GET /api/studio/gcode/:jobId`.
-* **What Happens Next**: G-code downloads directly to the user's computer. The project cycle completes.
-
----
-
-## 3. Every Screen
-
-This inventory maps routes, components, panels, dialogs, and features across the UI.
-
-### 3.1. System Dashboard
-* **Route**: `/`
-* **React Component**: [Dashboard](file:///e:/smartnest-ai/frontend/src/pages/Dashboard.jsx)
-* **Purpose**: Main portal showing layout throughput stats.
-* **Major Panels**:
-  * **System Metrics Grid**: Cards containing counts of projects, parsed DXFs, and nested runs.
-  * **Recent Projects Table**: Lists the 5 most recent project folders, showing their name, description, date created, and navigation buttons.
-* **Buttons**: `New Project` (top-right), and `View Project` (table row).
-
-### 3.2. Projects Page
-* **Route**: `/projects`
-* **React Component**: [Projects](file:///e:/smartnest-ai/frontend/src/pages/Projects.jsx)
-* **Purpose**: Create and delete project folders.
-* **Major Panels**:
-  * **Projects Cards Grid**: Renders individual cards detailing creation dates, materials, and description text.
-* **Dialogs**:
-  * **Create New Project Dialog**: Contains input fields for project name, description, material type, and material thickness.
-* **Buttons**: `Create Project` (header), `Manage` (card), and `Delete` (card).
-
-### 3.3. Project Details Page
-* **Route**: `/projects/:id`
-* **React Component**: [ProjectDetails](file:///e:/smartnest-ai/frontend/src/pages/ProjectDetails.jsx)
-* **Purpose**: Part queue list and DXF upload panel.
-* **Major Panels**:
-  * **DXF Parts Queue (Left)**: Table showing uploaded part names, upload timestamps, quantity editors, and deletion buttons.
-  * **Upload Geometry Source (Right)**: Drag-and-drop dashed container for DXF uploading.
-  * **Project Meta Card (Top)**: Form panel containing material type and thickness parameters.
-* **Buttons**: `Next` (navigates to review page), `Upload` (triggers file selector), and `Delete Part`.
-
-### 3.4. Review Nest Job Page
-* **Route**: `/projects/:id/review`
-* **React Component**: [ReviewNestJob](file:///e:/smartnest-ai/frontend/src/pages/ReviewNestJob.jsx)
-* **Purpose**: Pre-nesting parameters configuration, suitability checks, and stock allocations.
-* **Major Panels**:
-  * **Estimated Job Summary Card Grid**: Displays estimated sheet counts, default target utilization (82%), total part count, and total part surface area.
-  * **Nesting Strategy Selection Panel**: Radio buttons to select Greedy, Genetic Fast, Genetic Balanced, or Genetic Maximum optimization settings.
-  * **Planning Assistant (Collapsible Accordion)**: Sequence cards matching required parts against raw stock, floor inventory, and remnants.
-  * **Manual Configuration Sheet Grid**: Cards depicting individual sheet sources and bounds.
-  * **Mini CAD Viewport**: Renders the selected sheet's boundary and remnants geometry using Canvas.
-* **Dialogs**:
-  * **Operator Log Prompt**: Inputs for Operator Name and Email.
-  * **Validation Error Dialog**: Lists missing inputs (e.g. unselected remnants, custom dimensions missing, or deficit material).
-* **Buttons**: `Generate Nest`, `Add Sheet Card`, `Accept Recommendation`, `Zoom In/Out`, and `Reset Zoom`.
-
-### 3.5. Nesting Processing Dashboard
-* **Route**: `/results/:jobId/processing`
-* **React Component**: [NestingProcessingDashboard](file:///e:/smartnest-ai/frontend/src/pages/NestingProcessingDashboard.jsx)
-* **Purpose**: Live polling progress dashboard.
-* **Major Panels**:
-  * **Pipeline Progress Tracker (Left)**: Table detailing the status of the 9 stages (Waiting, Running, Completed).
-  * **Live Viewport Canvas (Center)**: Displays active packing shapes.
-  * **Job Statistics Card**: Shows active parameters, elapsed time, and strategy sub-statuses.
-* **Visualizations**: Interactive sheet bounds rendering showing parsed parts in real time.
-
-### 3.6. Results Dashboard
-* **Route**: `/results/:jobId`
-* **React Component**: [Result](file:///e:/smartnest-ai/frontend/src/pages/Result.jsx)
-* **Purpose**: Nested layout comparative review and CAM launcher.
-* **Major Panels**:
-  * **Nesting Quality Metrics Grid**: Renders total plate weights, plate costs, scrap values, and optimization runtime.
-  * **AI Advisor Recommendations Panel**: Centered box showing Gemini structural evaluation logs.
-  * **Interactive CAD Viewer Canvas**: Displays layout geometries. Supports pan and zoom.
-  * **Layout Selection Tabs**: Switching between Layout 1 (Compact), Layout 2 (Vertical), and Layout 3 (Horizontal).
-  * **Layout Statistics Detail Table (Bottom-Right)**: Details 13 layout-specific metrics.
-  * **AI Copilot Sidebar**: Chat prompt to interact with Gemini regarding optimization issues.
-* **Buttons**: `Finalize Layout`, `Download Report (PDF)`, `Export Layout (SVG)`, `Export Placements (JSON)`, `Adjust Placements`, and `Manufacturing Studio`.
-
-### 3.7. Manufacturing Studio
-* **Route**: `/results/:jobId/studio`
-* **React Component**: [ManufacturingStudio](file:///e:/smartnest-ai/frontend/src/pages/ManufacturingStudio.jsx)
-* **Purpose**: CAM simulator, toolpath sequencing, and G-code export center.
-* **Major Panels**:
-  * **Sheets Explorer (Left)**: Vertical strip listing layouts and scrap values.
-  * **Simulation Canvas (Center)**: HTML5 Canvas animating cutter movements (traverse, pierce, cut).
-  * **Metrics Panel (Right)**: Control box to choose profiles (Standard, Travel, Heat, Quality, Production) and toggle optimization plugins.
-  * **Toolpath Operation Sequencer Table (Bottom)**: Detailed step-by-step logs mapping coordinates, feed rates, action types, and optimization reasoning.
-* **Buttons**: `Play/Pause/Reset`, `Speed Toggle` (1x, 2x, 5x, 10x), `Download G-Code`, and `Back to Layout`.
-
-### 3.8. Remnants Inventory Page
-* **Route**: `/remnants`
-* **React Component**: [Remnants](file:///e:/smartnest-ai/frontend/src/pages/Remnants.jsx)
-* **Purpose**: Overview of reusable remnant sheet assets.
-* **Major Panels**:
-  * **Remnants Cards Grid / Table View**: Displays remnant previews, IDs, material types, remaining dimensions, and estimated value.
-  * **Filter Bar**: Dynamic drop-downs to filter by material, status (Available, Reserved, Consumed, Partially Used, Archived), type (Standard vs Scrap), and search text.
-
-### 3.9. Remnant Details Page
-* **Route**: `/remnants/:id`
-* **React Component**: [RemnantDetail](file:///e:/smartnest-ai/frontend/src/pages/RemnantDetail.jsx)
-* **Purpose**: Anatomy breakdown and setup workspace.
-* **Major Panels**:
-  * **Anatomy Preview Workspace**: Visualizes the remnant's geometry.
-  * **Genealogy Lineage Tree**: Interactive flowchart showing parent stocks, active remnants, and child segments.
-  * **Dimensions Card Grid**: Renders estimated scrap rate, thickness, remaining area, and remaining width/height.
-* **Dialogs**:
-  * **Workspace Setup Modal**: Select Route A (Create New Project) or Route B (Import into Project) with thickness matching.
-* **Buttons**: `Use Remnant`, and `Use Scrap`.
-
-### 3.10. Material Inventory Page
-* **Route**: `/sheets`
-* **React Component**: [Sheets](file:///e:/smartnest-ai/frontend/src/pages/Sheets.jsx)
-* **Purpose**: Track raw sheets and log stock audit transactions.
-* **Major Panels**:
-  * **Inventory Table**: Renders standard stock profiles in warehouse storage.
-  * **Consumption History Table**: Lists dates, sheets sizes, and projects that consumed standard sheets.
-  * **Remnants Usage History**: Records remnant consumption dates and operator logs.
-  * **Inventory Audit Logs**: Transaction ledger recording stock creation, updates, and deletion events.
-* **Dialogs**:
-  * **Add Material Stock Dialog**: Inputs for sheet size, material, quantity, storage location, and operator log.
-  * **Update Sheet Stock Dialog**: Adjust quantities and locations with audit log reason inputs.
-  * **Delete Sheet Stock Dialog**: Triggers stock deletion with reason audit logging.
-  * **Clear History Dialog**: Administrative logs clear authorization page.
-
----
-
-## 4. Project Lifecycle
-
-This section tracks the step-by-step processing lifecycle of a single Project:
-
+### Folder Map
 ```
-[Project Created]
-       ↓
-[Parts Uploaded (.dxf)]
-       ↓
-[DXF Converted to SVG (Converter API)]
-       ↓
-[SVG Cleaned (Preprocessor)]
-       ↓
-[Polygons Extracted (Welded & Grouped)]
-       ↓
-[Geometry Simplified (Douglas-Peucker 1.5% BB tolerance)]
-       ↓
-[Material Sources Configured (Stock / Remnants)]
-       ↓
-[BLF Suitability Check Passed]
-       ↓
-[Nesting Run Started (Worker Thread spawned)]
-       ↓
-[Progress Polling (NestingProcessingDashboard)]
-       ↓
-[Comparative Results Rendered (Layout 1 / 2 / 3)]
-       ↓
-[Optional: Manual Placements (Canvas Editor)]
-       ↓
-[Layout Finalized (Parent sheets marked Consumed; Leftovers partitioned into Available remnants/scrap)]
-       ↓
-[Manufacturing Studio (Toolpaths sequenced by weights)]
-       ↓
-[Optimization Plugins Applied (CLC / Chaining / Pierce)]
-       ↓
-[Simulation Verified]
-       ↓
-[G-Code Post-Processed & Exported]
+smartnest-ai/
+├── .agents/                    # Behavioral constraints and coding instructions
+├── backend/                    # Node.js Express server workspace
+│   ├── src/
+│   │   ├── config/             # Database connection, schemas, and migrations
+│   │   ├── controllers/        # Express route controllers
+│   │   ├── middleware/         # Auth, validation, and error handlers
+│   │   ├── routes/             # Express API routers
+│   │   ├── services/           # Business logic, math solvers, and exports
+│   │   ├── uploads/            # DXF files, SVGs, and layout JSONs
+│   │   └── workers/            # Worker thread optimization runner
+│   ├── server.js               # Application starter
+│   └── package.json            # Backend package configurations
+├── frontend/                   # React Vite project workspace
+│   ├── src/
+│   │   ├── assets/             # Global visual styling assets
+│   │   ├── components/         # Shared React widgets and vector canvases
+│   │   ├── layouts/            # Navigation shells
+│   │   ├── pages/              # Primary application views
+│   │   ├── services/           # Axios API connection client
+│   │   ├── App.jsx             # React router configuration
+│   │   └── main.jsx            # React client mount point
+│   ├── vite.config.js          # Vite build manager
+│   └── package.json            # Frontend package configurations
+├── DXF DATASET/                # Sample CAD drawings library
+└── README.md                   # System configuration overview
 ```
 
-### Description of Intermediate Stages:
-* **Geometry Simplification**: The system applies the Douglas-Peucker algorithm using a tolerance of 1.5% of the bounding box to reduce vertex counts for the genetic solver. Crucially, the system retains the high-resolution coordinates separately (`originalPoints` and `originalChildren`) for high-fidelity vector rendering and G-code output.
-* **Leftover Partitioning**: Uses Clipper subtraction routines to subtract nested parts from the sheet boundary. The remaining geometry is saved as a parent remnant (marked `Consumed`). If the remaining boundary contains a rectangular envelope larger than $50 \times 50\text{ mm}$ and has an area $\ge 5000\text{ mm}^2$, it is registered as an `Available` rectangular remnant. Remaining leftover segments matching the thresholds are saved as `Available` scrap pieces.
-* **Toolpath Sequencing weights**: The toolpaths are sequenced by sorting profiles matching specific factor weights:
-  * **Travel Optimized**: Traverses directly to the nearest-neighbor centroid.
-  * **Heat Balanced**: Sequentially skips adjacent areas to avoid thermal warping.
-  * **Quality Optimized**: Balances thermal factors, travel, and continuous gantry motion.
-  * **Production Optimized**: Prioritizes feed speeds and pierce times.
+### Folder Interactions
+* **CAD Upload Flow:** The React client uploads a DXF file to `fileRoutes.js`. `fileController.js` saves the file in `uploads/` and calls `nestingService.js` to parse the geometry.
+* **Nesting Optimization Flow:** `nestingController.js` spawns a worker thread (`nestingWorker.js`) which runs `nestingService.js` algorithms using dependencies from `ai-service/deepnest-next/` (Clipper, Minkowski Sum). The results are saved back to the `uploads/` folder as SVG and JSON files.
+* **CAM & G-Code Flow:** `studioController.js` calls `studioService.js` to process the layout JSON, generate optimized toolpaths, and compile them into G-code using `genericGCodePostProcessor.js`.
+* **Export Flow:** `exportController.js` calls `exportService.js` to parse layout files, convert SVGs to PNGs using `sharp`, generate reports using `pdfkit`, and serve them for download.
 
 ---
 
-## 5. Feature Inventory
+## 9. Technologies Used
 
-Categorized inventory of every user-facing feature in SmartNest AI:
+### Frontend Stack
+* **React (v19):** Component-based architecture for SPA state management.
+* **Vite:** High-speed asset compilation and hot-reloading.
+* **Material-UI (v9):** Visual design system containing widgets, icons, grids, and dialog overlays.
+* **HTML5 Canvas API:** Custom 2D CAD viewer that renders sheets, parts, zoom/pan operations, and drag-and-drop actions at 60fps.
 
-### 5.1. Project Management
-* Project Folder Creation (material-specific scoping).
-* Queue upload list with file area calculations.
-* Part quantity override controls.
-* Complete project deletion (cascades upload files and jobs).
+### Backend Stack
+* **Node.js & Express:** Lightweight, asynchronous server stack.
+* **PostgreSQL (pg):** Handles structured relational database storage.
+* **Worker Threads:** Offloads genetic optimization to background threads to keep the main Express server responsive.
 
-### 5.2. Material & Inventory Control
-* Master sheet catalog ledger (add, update, delete standard plates).
-* Multi-source configuration (allowed stock, remnants, newly declared stock).
-* Warehouse storage location audits.
-* Genealogy tracking (trace parent stock sheet down to active remnants and scrap).
-* Administrative history clearing audits.
+### Geometry & Math Stack
+* **Clipper Library:** Compiled C++ library that handles boolean polygon clipping operations (difference, union, intersection) and collision checks.
+* **Minkowski Sum Addon (`@deepnest/calculate-nfp`):** Native binding that calculates No-Fit Polygons for irregular geometries.
+* **SVG Preprocessor Addon (`@deepnest/svg-preprocessor`):** Parses SVG strings into coordinate arrays.
+* **Douglas-Peucker (DP) Algorithm:** Simplifies curves to speed up nesting calculations.
+* **Shoelace Formula:** Calculates polygon areas.
 
-### 5.3. Pre-Nesting Suitability Analyzer
-* JavaScript Bottom-Left-Fill (BLF) packing simulator.
-* Projected sheet utilization metrics indicator.
-* Feasibility part checklist (flags oversized shapes).
+### AI Stack
+* **Google Gemini API (`gemini-2.5-flash`):** Provides design and nesting optimization recommendations.
+* **`@google/genai` (v2.8.0):** Official SDK for the Gemini API.
 
-### 5.4. Nesting Core Optimization
-* Genetic solver offloaded to dedicated **Worker Threads**.
-* Concurrent Multi-Strategy Nesting:
-  * **Layout 1**: Bounding-box compaction (Compact).
-  * **Layout 2**: Strip packing vertically (Vertical).
-  * **Layout 3**: Strip packing horizontally (Horizontal).
-* Optimization levels adjustments: Greedy (instant), Fast (10 generations), Balanced (50 generations), Maximum (200 generations).
-* Interactive layout selection comparison view.
-
-### 5.5. Manual Layout Editor
-* Drag-and-drop workspace canvas.
-* 60fps containment check (visual green/red safe outline).
-* C++ Clipper collision engine integration (authorizes final placements).
-* Keyboard rotations and shortcuts (`R` / `Delete` / `Backspace` / `Esc`).
-* Undo / Redo placement stack.
-
-### 5.6. Manufacturing Studio (CAM)
-* Sequenced cutter head travel animation.
-* Playback speeds (1x, 2x, 5x, 10x).
-* Sequencer log table detailing coordinates, feed rates, action types, and optimization reasoning.
-* Post-processor selections: GRBL Laser, LinuxCNC, Mach3, Generic RS-274.
-* Travel Optimization profiles: Travel, Heat, Quality, Production.
-* Optimization plugins: Common Line Cutting (CLC), Chain Cutting, Pierce minimization.
-
-### 5.7. Professional Export Center
-* printable 8-page PDF report.
-* Scaled vector SVG layout formats.
-* JSON placements coordinates databases.
-
-### 5.8. Generative AI Advisor
-* Gemini-powered layout advisor (summaries, savings estimates).
-* AI Copilot chat prompt.
+### Utility & Export Stack
+* **PDFKit (v0.19):** Generates structured A4 PDF manufacturing reports.
+* **Sharp (v0.35):** Converts SVG layouts to high-resolution PNGs for embedding in PDF reports.
+* **Multer:** Handles multipart/form-data file uploads.
 
 ---
 
-## 6. Important Concepts Users Need To Learn
+## 10. Engineering Challenges Solved
 
-Key concepts beginners typically find confusing, and where they appear in SmartNest:
+### 10.1. CPU Event Loop Blocking
+* **Problem:** Running genetic nesting calculations on a single thread blocked the Express event loop, causing API requests to hang and make the server unresponsive.
+* **Solution:** Spawns nesting runs within dedicated Node.js `worker_threads` using `nestingWorker.js`. The main thread remains responsive to status queries and API requests.
+* **Impact:** High-traffic polling requests resolve instantly (<5ms) without hanging. Sockets and database client references are closed naturally when the worker thread finishes, preventing database connection leaks.
 
-1. **DXF (Drawing Exchange Format)**
-   * *Concept*: A CAD vector file format containing drawing coordinates. Unlike raster images (JPEG/PNG), DXF maps paths.
-   * *App Location*: Appears in **Project Details** upload drawer and the **Parts Queue**.
-2. **Polygon Hierarchy (Outer Bounds vs Holes)**
-   * *Concept*: A closed loop boundary. In nesting, parts are represented as polygon hierarchies, where outer loops are parent parts and inner loops are holes/cutouts. Nested parts can be placed inside internal holes of larger parts.
-   * *App Location*: Visualized in the **Manual Editor** canvas and the **Nesting processing** live viewport.
-3. **Usable Remnant**
-   * *Concept*: Usable leftover material salvaged from a completed job, which is returned to warehouse inventory. In SmartNest, remnants are specifically rectangular sheets extracted from leftovers.
-   * *App Location*: Appears in **Remnants Inventory**, **Review Nest Job** sheets configuration, and **Remnant Details**.
-4. **Scrap Offcut**
-   * *Concept*: Leftover material that exceeds minimum size thresholds but possesses an irregular boundary shape. Usable for custom manual placements but excluded from automated standard recommendations.
-   * *App Location*: Appears under **Irregular Scrap / Offcuts** tabs in **Remnants Inventory**.
-5. **NFP (No-Fit Polygon)**
-   * *Concept*: A Minkowski Sum calculation that maps the boundary coordinates within which two irregular polygons will overlap. Used by the genetic engine to prevent part collisions.
-   * *App Location*: Executed invisibly by the backend deepnest-next genetic optimization runner.
-6. **Utilization vs Net Utilization**
-   * *Concept*: *Utilization* measures total part area divided by total sheet area. *Net Utilization* measures total part area divided by the bounding envelope area of nested parts (indicating compaction quality).
-   * *App Location*: Appears in **Result** stats cards and the PDF Report.
-7. **Lead-In & Lead-Out**
-   * *Concept*: Auxiliary toolpaths where the cutter pierces the metal outside the part boundary and cuts inwards. This prevents the initial pierce blow-hole from damaging the final component boundary.
-   * *App Location*: Visualized in **Manufacturing Studio** as orange (pierce), blue (lead-in/out), and green (cutting) vectors.
-8. **Pierce**
-   * *Concept*: The action of burning through raw sheet metal before commencing a cut contour. Piercing takes time and wears down cutter nozzles.
-   * *App Location*: Configured and tracked in **Manufacturing Studio** metrics panels.
-9. **Rapid Move**
-   * *Concept*: Movements where the laser gantry moves at maximum speed with the cutting nozzle turned off (traverse travel). Traverses should be minimized.
-   * *App Location*: Visualized as red dashed paths in **Manufacturing Studio**.
-10. **Post Processor**
-    * *Concept*: A translation script that converts raw vector toolpaths into machine-specific G-code dialects (e.g. converting paths to Mach3-compatible G-code).
-    * *App Location*: Found in **Manufacturing Studio** under "Target Controller".
-11. **G-Code**
-    * *Concept*: CNC programming language containing directions (G00 rapid move, G01 linear feed, M03 laser fire) read by the machine controller.
-    * *App Location*: Exported in **Manufacturing Studio** via "Download G-Code".
+### 10.2. Precision Mismatch (Simplification vs. Cutting)
+* **Problem:** Simplifying complex curves to speed up genetic calculations reduced the accuracy of the final cut, resulting in parts that did not match the original CAD design.
+* **Solution:** Caches the original high-resolution points (`originalPoints` and `originalChildren`) separately. The simplified geometry is used only as a proxy for collision detection during nesting.
+* **Impact:** The genetic solver runs quickly, while the visual canvas and exported G-code retain full CAD precision.
+
+### 10.3. Remnant Inventory Leaks & Collisions
+* **Problem:** Tracking irregular remnants in inventory often caused overlaps and collisions because the remnants were stored as simple rectangles.
+* **Solution:** Clipper subtraction calculates exact leftover shapes (outer boundaries and inner holes) and saves them as JSONB in the database.
+* **Impact:** The system supports nesting on irregular remnants, and collision checks respect complex boundaries.
+
+### 10.4. Watchdog Timeout & Safety Rollbacks
+* **Problem:** Large nesting jobs with many parts could cause the CAM sequencing optimization loop to run slowly or hang, blocking the server.
+* **Solution:** Implements a safety timeout watchdog set to 2 seconds. If the optimization run exceeds this limit, the system aborts and falls back to the baseline Standard profile.
+* **Impact:** Ensures the server remains stable, while `integrityGuard.js` validates toolpaths to catch any layout errors before exporting G-code.
 
 ---
 
-## 7. SmartNest Processing Pipeline
-
-This table correlates backend services with the frontend pages where they are triggered and displayed:
-
-| Pipeline Step | Backend Controller / Service | Triggered by Page | Displayed on Page |
-| :--- | :--- | :--- | :--- |
-| **1. DXF Upload** | `fileController.uploadDxfFile` | `ProjectDetails` | `ProjectDetails` |
-| **2. SVG Conversion** | `nestingService.runDeepnestNext` | `ProjectDetails` (area calculation) / `ReviewNestJob` | `ProjectDetails` queue |
-| **3. Polygon Extraction** | `nestingService.groupPolygonsByHierarchy` | `ReviewNestJob` (suitability run) / `NestingProcessingDashboard` | `NestingProcessingDashboard` |
-| **4. DeepNest Execution** | `nestingWorker.js` / `nestingService.js` | `ReviewNestJob` (Generate Nest) | `NestingProcessingDashboard` / `Result` |
-| **5. Collision Checks** | `api.validatePlacement` / Clipper | `Result` (Manual adjustments drag/drop) | `Result` (canvas) |
-| **6. Yield Statistics** | `costingService.js` / `nestingController.js` | `nestingWorker.js` (Completed state) | `Result` (metrics cards) |
-| **7. Partition Engine** | `nestingController.finalizeJob` / Clipper | `Result` (Finalize Layout) | `Remnants` inventory |
-| **8. Toolpath Generation**| `studioService.js` / `optimizationPipeline.js` | `ManufacturingStudio` (fetchToolpathData) | `ManufacturingStudio` |
-| **9. Post-Processing** | `genericGCodePostProcessor.js` | `ManufacturingStudio` (Download G-Code) | Downstream CNC machine |
+## 11. Current Strengths
+* **Decoupled Architecture:** Express API server, React frontend, and C++ geometry engines operate independently.
+* **Headless Integration:** Native Minkowski calculations run directly in Node.js without requiring a desktop environment.
+* **Multi-Strategy Nesting:** Computes Compact, Vertical, and Horizontal layouts concurrently to let operators pick the best yield.
+* **Closed-Loop Remnants Harvesting:** Carves usable rectangular remnants and irregular scrap from leftovers and saves them to inventory with complete parent-child lineage tracking.
+* **Explainable AI Integration:** The Gemini-powered advisor and copilot provide structural feedback and cost-saving recommendations.
 
 ---
 
-## 8. Hidden Processes Worth Teaching
-
-These background calculations happen automatically but are invisible to users, making them excellent educational highlights for a guided tutorial:
-
-1. **Douglas-Peucker Polygon Simplification**
-   * *Mechanism*: Smooths curves by removing dense vertices that do not change geometry outline. Reduces genetic solver load.
-   * *Educational Value*: Explaining that SmartNest nests a simplified proxy shape but cuts the high-resolution original CAD line ensures operators understand why the layout calculations run fast without losing drawing detail.
-2. **NFP (No-Fit Polygon) Caching**
-   * *Mechanism*: Computes overlap boundaries for pairs of shapes. The system invalidates cached NFPs whenever placements hashes change.
-   * *Educational Value*: Informs the user why consecutive runs of similar geometry groups complete faster.
-3. **Usable Rectangle Partitioning Thresholds**
-   * *Mechanism*: The Clipper subtraction subtraction engine carves usable rectangular offcuts. It screens them against a strict threshold: Minimum Area $\ge 5000\text{ mm}^2$, Minimum Width $\ge 50\text{ mm}$, Minimum Height $\ge 50\text{ mm}$. Anything failing this checks is classified as irregular scrap.
-   * *Educational Value*: Guides users on how size parameters determine if leftovers can be loaded into inventory.
-4. **Area Conservation Verification**
-   * *Mechanism*: Integrates a mathematical check on layout finalization: $\text{Parent Leftover Area} = \text{Rectangular Remnant Area} + \sum \text{Scrap Pieces Area}$. If the difference exceeds $1\%$, a console warning is flagged.
-   * *Educational Value*: Demonstrates calculation accuracy to operators.
-5. **Pierce Minimization (Common Line & Chain Cutting)**
-   * *Mechanism*: If two parts share an edge, Common Line Cutting rewrites geometry paths to cut the shared line once, saving one cut and one pierce. Chain cutting links consecutive contours with bridges, cutting multiple parts in a single pierce action.
-   * *Educational Value*: Highlights how advanced CAM reduces pierce damage and cycle times.
+## 12. Current Limitations
+* **Single-Node Event Loop:** Worker threads run in parallel, but high traffic could overload CPU resources if not managed by a processing queue.
+* **No 3D Boundary Support:** Geometry processing is restricted to 2D profiles; 3D designs (STEP/IGES) must be converted to 2D DXF or SVG files before uploading.
 
 ---
 
-## 9. Existing Sample Data
-
-The codebase contains the following sample data assets that can be preloaded for guided tutorials:
-
-* **CAD Drawings Dataset**: Located in [DXF DATASET](file:///e:/smartnest-ai/DXF%20DATASET). Contains 20 industrial profiles:
-  * `01_circle_D50.dxf` & `02_circle_D100.dxf` (Basic Circles).
-  * `03_square_50x50.dxf` & `04_square_100x100.dxf` (Basic Squares).
-  * `05_rectangle_100x50.dxf` & `06_rectangle_200x100.dxf` (Basic Rectangles).
-  * `07_triangle_equilateral_100mm.dxf` (Triangle).
-  * `08_pentagon.dxf`, `09_hexagon.dxf` & `10_octagon.dxf` (Polygons).
-  * `11_mounting_plate_4holes.dxf` & `12_mounting_plate_8holes.dxf` (Plates with internal cutouts).
-  * `13_circular_flange_plate.dxf` & `14_motor_base_plate_with_slots.dxf` (Slotted components).
-  * `15_L_bracket.dxf`, `16_U_bracket.dxf` & `17_T_bracket.dxf` (Structural brackets).
-  * `18_gusset_plate.dxf`, `19_machine_cover_plate.dxf` & `20_electrical_panel_cutout_plate.dxf` (Enclosures).
+## 13. Future Extension Points
+* **Distributed Redis Job Queue:** Offload worker threads to a background task queue (such as BullMQ with Redis) to handle high traffic and manage CPU resources.
+* **Multi-Sheet Nesting:** Extend the genetic algorithm to distribute part placement across multiple consecutive sheets.
+* **Dynamic Lead-In Position Tuning:** Automatically move lead-in pierce points away from adjacent parts to prevent heat damage.
+* **Laser-Head Collision Avoidance:** Add algorithms to plan travel paths that bypass already cut parts, preventing the nozzle from colliding with tilted pieces.
 
 ---
 
-## 10. Screens That Would Benefit From Guided Explanation
-
-Educational opportunities within the application that should be covered in the walkthrough:
-
-1. **Review Nest Job Page**
-   * *Opportunity*: Explain why **Operator Name & Email** are logged (tracks inventory transactions and audit trials).
-   * *Opportunity*: Explain the bottom-left-fill suitability yield. Teach users to add more sheets if the suitability checker warns of a capacity deficit.
-2. **Comparative Results Dashboard**
-   * *Opportunity*: Clarify the difference between Layout 1, 2, and 3 strategies. Explain why vertical or horizontal packing options might be preferred over a simple compact bounding-box layout (e.g. to preserve continuous vertical sheet strips).
-   * *Opportunity*: Teach the user how **Net Utilization** indicates placement efficiency compared to simple sheet area consumption.
-3. **Manual Nesting Editor**
-   * *Opportunity*: Introduce keyboard shortcuts. Provide visual prompts for `R` to rotate and mouse wheel scrolling.
-   * *Opportunity*: Explain why the part borders outline in red (overlap collision or boundary breach) and how Clipper checks prevent crashes.
-4. **Manufacturing Studio**
-   * *Opportunity*: Explain how different sequence profiles (Travel vs Heat Balanced) affect the material. (e.g. heat balanced sequencing prevents thermal deformation in thin sheets by distributing laser heat).
-   * *Opportunity*: Explain how Common Line Cutting and Chain Cutting save pierce operations, reducing nozzle wear and cycle times.
-
----
-
-## 11. Navigation Map
-
-This map outlines all pages, routes, and possible transitions within SmartNest AI:
+## 14. End-to-End Data Flow
 
 ```
-[Dashboard] (Route: /)
-    ↓ (Click "New Project" button / "Projects" sidebar link)
-[Projects] (Route: /projects)
-    ↓ (Click "Manage" on project card)
-[Project Details] (Route: /projects/:id)
-    ↓ (Click "Next" button in project meta panel)
-[Review Nest Job] (Route: /projects/:id/review)
-    ↓ (Click "Generate Nest" button, fill Operator details, submit)
-[Nesting Processing Dashboard] (Route: /results/:jobId/processing)
-    ↓ (Automated polling redirect on Completed status)
-[Result] (Route: /results/:jobId)
-    ├─→ [Result - Edit Mode] (Toggle "Adjust Placements" switch)
-    ├─→ [Result - AI Copilot Sidebar] (Click Chat/Copilot Icon)
-    └─→ [Manufacturing Studio] (Route: /results/:jobId/studio?strategy=a)
+1. DXF Upload
+   [React UI] --(POST Multipart)--> [fileController.js] --> [Multer writes file]
+                                        ↓
+                                    [nestingService.js] --> [Converter API] --> [Write SVG preview]
 
-[Remnants] (Route: /remnants)
-    ↓ (Click "Details" on remnant card)
-[Remnant Detail] (Route: /remnants/:id)
-    ↓ (Click "Use Remnant" -> Dialog workspace setups)
-    ├─→ Route A: [Projects - Create New from remnant details] 
-    └─→ Route B: [Project Details - Import remnant as stock sheet boundary]
+2. Pre-Nest Suitability
+   [Review Page] --(POST parameters)--> [remnantController.js] --> [Enrich SVG dimensions]
+                                                                        ↓
+                                                                   [Run 15mm BLF simulation]
+                                                                        ↓
+                                                                   [Return yield & feasibility checklist]
 
-[Material Inventory] (Route: /sheets)
-    ├─→ [Stock Inventory Tab] (Add, edit, delete sheets)
-    ├─→ [Consumption History Tab] (View usage records)
-    ├─→ [Remnants Usage History Tab] (Track consumed remnants)
-    └─→ [Audit Logs Tab] (Review inventory ledger events)
+3. Nesting Execution
+   [Start Nesting] --(POST parameters)--> [nestingController.js] --> [Spawn Worker Thread]
+                                                                          ↓
+                                                                     [nestingWorker.js]
+                                                                          ↓
+                                                                     [genetic algorithm / placeParts]
+                                                                          ↓
+                                                                     [Write SVG & JSON outputs]
+
+4. Manual Layout Tweaks
+   [Drag-and-drop Part] --> [Canvas coordinates update] --> [Validate Collision (Clipper)]
+                                                                ↓
+                                                            [Save Layout -> Update JSON]
+
+5. Layout Finalization
+   [Finalize Layout] --(POST)--> [nestingController.js]
+                                     ├─> [Clipper subtracts nested parts from sheet]
+                                     ├─> [usableRectangle -> Save Available standard remnant]
+                                     ├─> [scrapPieces -> Save Available scrap remnant]
+                                     ├─> [Verify Area Conservation]
+                                     └─> [deductSheetsConsumed / recordRemnantUsage]
+
+6. CAM Optimization
+   [Open Studio] --(GET)--> [studioController.js]
+                                 ↓
+                            [studioService.js] --> [Resolve Feed Rates]
+                                 ↓
+                            [optimizationPipeline.js]
+                                 ├─> [Optimize sequence & apply CLC]
+                                 ├─> [Apply Chaining Bridges & Pierce Suppression]
+                                 └─> [validateToolpath (Integrity Guard)]
+
+7. G-Code Generation
+   [Download G-Code] --(GET)--> [studioController.js]
+                                    ↓
+                                [genericGCodePostProcessor.js]
+                                    ├─> [validateOperations]
+                                    ├─> [validateGCode Overtravel bounds]
+                                    └─> [Return G-code string file download]
 ```
 
 ---
 
-## 12. Appendix
+## 15. Developer Knowledge Transfer
 
-Reference lists of routes, controllers, and services in SmartNest AI.
+### Core Modules to Study First
+1. [nestingService.js](file:///e:/smartnest-ai/backend/src/services/nestingService.js): The core geometry engine. Contains polygon simplifications, grouping, and bottom-left genetic placement algorithms.
+2. [optimizationPipeline.js](file:///e:/smartnest-ai/backend/src/services/optimizationPipeline.js): The CAM routing solver. Manages optimization profiles and coordinates sequencing.
+3. [geometryOptimizer.js](file:///e:/smartnest-ai/backend/src/services/geometryOptimizer.js): The Common Line Cutting (CLC) edge matching solver.
+4. [chainOptimizer.js](file:///e:/smartnest-ai/backend/src/services/chainOptimizer.js): The bridge builder engine.
+5. [nestingController.js](file:///e:/smartnest-ai/backend/src/controllers/nestingController.js): Coordinates optimization workers, manual layout updates, and remnants partitioning.
 
-### 12.1. Component and Page Mapping
-* **Dashboard Layout**: [DashboardLayout](file:///e:/smartnest-ai/frontend/src/layouts/DashboardLayout.jsx) (Route Shell)
-* **Dashboard Page**: [Dashboard](file:///e:/smartnest-ai/frontend/src/pages/Dashboard.jsx) (Route: `/`)
-* **Projects Page**: [Projects](file:///e:/smartnest-ai/frontend/src/pages/Projects.jsx) (Route: `/projects`)
-* **Project Details**: [ProjectDetails](file:///e:/smartnest-ai/frontend/src/pages/ProjectDetails.jsx) (Route: `/projects/:id`)
-* **Review Nest Page**: [ReviewNestJob](file:///e:/smartnest-ai/frontend/src/pages/ReviewNestJob.jsx) (Route: `/projects/:id/review`)
-* **Nesting Processing**: [NestingProcessingDashboard](file:///e:/smartnest-ai/frontend/src/pages/NestingProcessingDashboard.jsx) (Route: `/results/:jobId/processing`)
-* **Results Comparative View**: [Result](file:///e:/smartnest-ai/frontend/src/pages/Result.jsx) (Route: `/results/:jobId`)
-* **Manufacturing Studio**: [ManufacturingStudio](file:///e:/smartnest-ai/frontend/src/pages/ManufacturingStudio.jsx) (Route: `/results/:jobId/studio`)
-* **Remnants inventory**: [Remnants](file:///e:/smartnest-ai/frontend/src/pages/Remnants.jsx) (Route: `/remnants`)
-* **Remnants details**: [RemnantDetail](file:///e:/smartnest-ai/frontend/src/pages/RemnantDetail.jsx) (Route: `/remnants/:id`)
-* **Material Inventory**: [Sheets](file:///e:/smartnest-ai/frontend/src/pages/Sheets.jsx) (Route: `/sheets`)
+### Modules to Avoid Modifying Carelessly
+* **`prepareEnvironment()` in [nestingService.js](file:///e:/smartnest-ai/backend/src/services/nestingService.js#L266-L327):** Configures global browser mocks (window, document, self) to run Clipper and Minkowski engines in Node.js. Modifying this could cause the headless worker process to crash.
+* **`placeParts()` in [nestingService.js](file:///e:/smartnest-ai/backend/src/services/nestingService.js#L896-L1200):** The core packing solver. Small adjustments to NFPs or Clipper subtractions can cause parts to overlap or result in geometry errors.
+* **`slicePolygonCLC()` in [geometryOptimizer.js](file:///e:/smartnest-ai/backend/src/services/geometryOptimizer.js#L111-L143):** Splits closed contours into open C-loops for common line cuts. Modifying this could result in unclosed paths that violate G-code integrity checks.
 
-### 12.2. Shared UI components
-* **CAD Canvas View**: [LayoutCanvas](file:///e:/smartnest-ai/frontend/src/components/LayoutCanvas.jsx) (Renders geometries on SVG canvas)
-* **Parts Library Sidebar**: [PartsLibrary](file:///e:/smartnest-ai/frontend/src/components/PartsLibrary.jsx) (Lists parts for manual placement)
-* **Manual Nest Toolbar**: [Toolbar](file:///e:/smartnest-ai/frontend/src/components/Toolbar.jsx) (Undo/redo, delete, zoom controls)
-* **Manual Nest Placement Editor Sidebar**: [EditingSidebar](file:///e:/smartnest-ai/frontend/src/components/EditingSidebar.jsx) (Manual position/rotation coordinate text inputs)
-* **Manual Nest Shifter**: [CoordinateShifter](file:///e:/smartnest-ai/frontend/src/components/CoordinateShifter.jsx) (Shift all parts on canvas by offsets)
-* **Intelligent Fill panel**: [IntelligentFillPanel](file:///e:/smartnest-ai/frontend/src/components/IntelligentFillPanel.jsx) (Autofills sheets with grid arrays)
-* **CAM Canvas View**: [StudioCanvas](file:///e:/smartnest-ai/frontend/src/components/StudioCanvas.jsx) (Simulates animated toolpaths)
-* **CAM Control panel**: [StudioMetricsPanel](file:///e:/smartnest-ai/frontend/src/components/StudioMetricsPanel.jsx) (Displays toolpath properties and controls optimization profiles)
-* **Layout Stats breakdown**: [Statistics](file:///e:/smartnest-ai/frontend/src/components/Statistics.jsx) (Detailed yield statistics)
+### Critical Engineering Constraints
+* **High-Precision Cache:** Visual canvas previews and G-code outputs must use `originalPoints` and `originalChildren`. The simplified geometries should only be used as proxies for collision checks within the genetic solver.
+* **Holes-First Ordering:** The toolpath sequencer must always cut internal holes before cutting the parent part's outer boundary to prevent alignment issues.
+* **Area Conservation:** The total area of harvested remnants and scrap must equal the leftover area of the parent sheet within a 1% tolerance:
+  `Parent Area = Rect Area + Scrap Area (within 1% tolerance)`
 
-### 12.3. Key Backend Controllers
-* **Projects**: [projectController](file:///e:/smartnest-ai/backend/src/controllers/projectController.js) (CRUD projects, update material specifications)
-* **Files**: [fileController](file:///e:/smartnest-ai/backend/src/controllers/fileController.js) (uploads DXF, parsing triggers, deletes parts, quantity edits)
-* **Nesting Jobs**: [nestingController](file:///e:/smartnest-ai/backend/src/controllers/nestingController.js) (initiates background worker, retrieves status, saves manual placements, layout finalization, remnant partitioning)
-* **Remnants**: [remnantController](file:///e:/smartnest-ai/backend/src/controllers/remnantController.js) (lists inventory, recommendations matching projects, details)
-* **Sheets Stock**: [sheetController](file:///e:/smartnest-ai/backend/src/controllers/sheetController.js) (manages inventory sheets, history ledgers, audit trail records)
-* **AI Advisor**: [aiController](file:///e:/smartnest-ai/backend/src/controllers/aiController.js) (live evaluation summaries and cost estimates via Gemini)
-* **Copilot Chat**: [copilotController](file:///e:/smartnest-ai/backend/src/controllers/copilotController.js) (conversational chat with Gemini advisor)
-* **Manufacturing Studio**: [studioController](file:///e:/smartnest-ai/backend/src/controllers/studioController.js) (calculates toolpath segments and downloads G-code)
-
-### 12.4. Important Backend Services
-* **Nesting Service**: [nestingService](file:///e:/smartnest-ai/backend/src/services/nestingService.js) (converts drawings, parses SVG contours, runs simplify curves, MinkowskiSum genetic core execution wrapper)
-* **Nesting Worker Thread**: [nestingWorker](file:///e:/smartnest-ai/backend/src/workers/nestingWorker.js) (executes runs on background threads)
-* **CAM Sequencer**: [studioService](file:///e:/smartnest-ai/backend/src/services/studioService.js) (maps coordinate transformations, calculates feed speeds, manages cache details)
-* **Optimization Pipeline**: [optimizationPipeline](file:///e:/smartnest-ai/backend/src/services/optimizationPipeline.js) (sequences toolpaths, estimates G-code runtimes, triggers plugins)
-* **Common Line Cutting (CLC)**: [geometryOptimizer](file:///e:/smartnest-ai/backend/src/services/geometryOptimizer.js) (identifies shared edges and merges paths)
-* **Chain Cutting**: [chainOptimizer](file:///e:/smartnest-ai/backend/src/services/chainOptimizer.js) (links contours with bridges)
-* **Pierce Optimizer**: [pierceOptimizer](file:///e:/smartnest-ai/backend/src/services/pierceOptimizer.js) (sequences pierce locations)
-* **Toolpath Integrity Checker**: [integrityGuard](file:///e:/smartnest-ai/backend/src/services/integrityGuard.js) (validates toolpaths to prevent sheet edge collisions)
-* **AI Recommendation Engine**: [aiService](file:///e:/smartnest-ai/backend/src/services/aiService.js) (interacts with Gemini API `gemini-2.5-flash` using `@google/genai` library)
-* **Cost Estimator**: [costingService](file:///e:/smartnest-ai/backend/src/services/costingService.js) (calculates material densities, price rates, scrap values)
-* **Inventory Management**: [inventoryService](file:///e:/smartnest-ai/backend/src/services/inventoryService.js) (deducts stock balances, registers consumed remnants)
-* **Post Processors**: [genericGCodePostProcessor](file:///e:/smartnest-ai/backend/src/services/genericGCodePostProcessor.js) (formats coordinates into G-code dialect blocks matching machine profile specifications)
-
-### 12.5. REST API Schema Reference
-
-#### 12.5.1. Projects
-* `GET /api/projects` - Retrieves all projects.
-* `GET /api/projects/:id` - Retrieves a specific project folder.
-* `POST /api/projects` - Creates a project card.
-  * *Request Body*: `{ user_id, project_name, description, materialType, materialThickness }`
-* `POST /api/projects/create-from-remnant` - Generates a project matching remnant materials.
-  * *Request Body*: `{ remnantId, project_name, description }`
-* `DELETE /api/projects/:id` - Deletes a project card.
-* `PUT /api/projects/:id/material` - Updates project material type/thickness parameters.
-  * *Request Body*: `{ materialType, materialThickness }`
-* `GET /api/projects/dashboard/stats` - Retrives global system analytics.
-
-#### 12.5.2. Geometries & Files
-* `GET /api/files/project/:projectId` - Retrieves files list for project.
-* `POST /api/files/upload` - Uploads a DXF drawing.
-  * *Request Body* (Multipart Form): `project_id` (Integer), `file` (Binary), `quantity` (Integer).
-* `DELETE /api/files/:id` - Deletes a file record.
-* `PUT /api/files/:id/quantity` - Modifies a part's queue quantity.
-  * *Request Body*: `{ quantity }`
-* `GET /api/files/geometry/:id` - Retrieves parsed SVG geometry coordinates.
-
-#### 12.5.3. Nesting Runs & Manual Editor
-* `POST /api/nesting/start/:projectId` - Launches background solver.
-  * *Request Body*: `{ optimizationLevel, sheetWidth, sheetHeight, remnantId, nestingMode, operatorName, operatorEmail, configuredSheets }`
-* `GET /api/nesting/status/:jobId` - Polls status. Uses query `?progressOnly=true` for progress stages.
-* `GET /api/nesting/result/:jobId` - Retrieves layout results and statistics.
-* `GET /api/nesting/layout/:jobId` - Loads placements coordinates for manual adjustments.
-  * *Query Parameter*: `?strategy=`
-* `PUT /api/nesting/layout/:jobId` - Saves manual layout placements.
-  * *Request Body*: `{ parts, strategy }`
-* `POST /api/nesting/reset/:jobId` - Resets placements back to initial Auto Nest results.
-* `POST /api/nesting/regenerate/:jobId` - Recomputes layouts.
-* `POST /api/nesting/finalize/:jobId` - Finalizes layouts, updating stock inventory balances.
-* `POST /api/nesting/layout/validate/:jobId` - Backend Clipper collision test.
-  * *Request Body*: `{ candidate, placements }`
-* `POST /api/nesting/layout/intelligent-fill/:jobId` - Array fill planner.
-  * *Request Body*: `{ placements, partsToDuplicate, limits, gridStep, rotations }`
-
-#### 12.5.4. Inventory Sheets & Audit logs
-* `GET /api/sheets` - Retrieves warehouse stock ledger.
-* `POST /api/sheets` - Adds standard sheet plate stock.
-  * *Request Body*: `{ width, height, materialType, materialThickness, quantity, storageLocation, addedBy, email }`
-* `PUT /api/sheets/:id` - Updates quantity/location with audit tracking details.
-  * *Request Body*: `{ quantity, storageLocation, updatedBy, email, reason }`
-* `DELETE /api/sheets/:id` - Deletes sheet inventory logs with audit details.
-  * *Request Body*: `{ deletedBy, email, reason }`
-* `GET /api/sheets/history` - Retrieves consumption history list.
-* `GET /api/sheets/remnant-history` - Retrieves remnant history list.
-* `GET /api/sheets/audit-logs` - Retrieves stock transaction audits ledger.
-* `DELETE /api/sheets/history/clear` - Clears consumption ledger logs.
-  * *Request Body*: `{ clearedBy, email, reason }`
-* `DELETE /api/sheets/remnant-history/clear` - Clears remnant usage ledger logs.
-  * *Request Body*: `{ clearedBy, email, reason }`
-* `DELETE /api/sheets/audit-logs/clear` - Clears audit logs ledger.
-  * *Request Body*: `{ clearedBy, email, reason }`
-
-#### 12.5.5. Reusable Remnants
-* `GET /api/remnants` - Lists available remnants.
-  * *Query Parameter*: `?isScrap=`
-* `GET /api/remnants/:id` - Retrieves a remnant record and parent-child genealogy tree.
-* `GET /api/remnants/recommend/:projectId` - Recommends compatible remnants.
-* `POST /api/remnants/pre-nest/:projectId` - Runs bottom-left-fill simulator feasibility check.
-  * *Request Body*: `{ remnantId, sheetWidth, sheetHeight }`
-
-#### 12.5.6. AI Services
-* `GET /api/ai/advisor/:jobId` - Retrieves Gemini-powered design advisor reports.
-  * *Query Parameter*: `?enabled=`
-  * *Header*: `x-ai-advisor-enabled`
-* `POST /api/copilot/chat` - Submits a question to the AI Copilot.
-  * *Request Body*: `{ jobId, message }`
-
-#### 12.5.7. Manufacturing Studio
-* `GET /api/studio/toolpath/:jobId` - Generates sequenced toolpath operations.
-  * *Query Parameters*: `strategy`, `clc` (Boolean), `chaining` (Boolean), `pierceOpt` (Boolean).
-* `GET /api/studio/gcode/:jobId` - Downloads machine controller-ready G-code.
-  * *Query Parameters*: `strategy`, `sheetIdx` (Integer), `profileKey`, `clc` (Boolean), `chaining` (Boolean), `pierceOpt` (Boolean), `machineProfile`.
+### Under-the-Hood Assumptions
+* All coordinates use standard metric units (millimeters).
+* Winding rules distinguish boundaries and holes: counter-clockwise polygons are treated as outer boundaries, while clockwise polygons are treated as internal holes.
+* The system assumes a 72 DPI scaler when converting vector drawings.
+* Sockets and database references must be closed when the worker thread finishes to prevent connection leaks.

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { useGuide } from '../context/GuideContext';
 import {
   Typography,
   Box,
@@ -363,6 +364,15 @@ export default function ReviewNestJob() {
   const [validationErrorOpen, setValidationErrorOpen] = useState(false);
   const [operatorName, setOperatorName] = useState('');
   const [operatorEmail, setOperatorEmail] = useState('');
+  
+  const { activePhase } = useGuide();
+  
+  useEffect(() => {
+    if (activePhase) {
+      setOperatorName('Guide Operator');
+      setOperatorEmail('guide@smartnest.ai');
+    }
+  }, [activePhase]);
 
   const getStockQuantity = (width, height) => {
     if (!project) return 0;
@@ -1671,6 +1681,7 @@ export default function ReviewNestJob() {
                     value={baseSheetPreset}
                     label="Base Sheet Preset"
                     onChange={(e) => setBaseSheetPreset(e.target.value)}
+                    data-guide-id="preset-size-select"
                     sx={{
                       color: '#ffffff',
                       '.MuiOutlinedInput-notchedOutline': { borderColor: 'rgba(255,255,255,0.1)' }
@@ -2068,7 +2079,7 @@ export default function ReviewNestJob() {
         </Typography>
         <Divider sx={{ borderColor: 'rgba(255,255,255,0.06)', mb: 2.5 }} />
 
-        <FormControl size="small" fullWidth sx={{ mb: 1 }}>
+        <FormControl size="small" fullWidth sx={{ mb: 1 }} data-guide-id="optimization-level-select">
           <InputLabel id="opt-level-label" sx={{ color: '#a9b1d6' }}>Optimization Level</InputLabel>
           <Select
             labelId="opt-level-label"
@@ -2090,7 +2101,7 @@ export default function ReviewNestJob() {
       </Paper>
 
       {/* 11. Suitability Analyzer */}
-      <Paper sx={{ p: 3, bgcolor: '#0f1319', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '12px', mb: 3 }}>
+      <Paper sx={{ p: 3, bgcolor: '#0f1319', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '12px', mb: 3 }} data-guide-id="suitability-check-card">
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
           <Typography variant="h6" sx={{ color: '#ffffff', fontWeight: 700 }}>
             Pre-Nest Suitability Analyzer (Sheet 1 Bounding Box)
@@ -2244,6 +2255,7 @@ export default function ReviewNestJob() {
         disabled={files.length === 0 || generating}
         onClick={handleGenerateNest}
         startIcon={generating ? <CircularProgress size={20} color="inherit" /> : <StartIcon />}
+        data-guide-id="generate-nest-btn"
         sx={{
           background: 'linear-gradient(135deg, #0d9488 0%, #06b6d4 100%)',
           color: '#ffffff',

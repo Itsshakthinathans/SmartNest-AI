@@ -30,6 +30,9 @@ function ensureEnvironment() {
   const clipperCode = fs.readFileSync('E:/smartnest-ai/ai-service/deepnest-next/main/util/clipper.js', 'utf8');
   const clipperFn = new Function('root', clipperCode + '; return root.ClipperLib || ClipperLib;');
   global.ClipperLib = clipperFn(global);
+  if (global.ClipperLib && global.ClipperLib.Clipper) {
+    global.ClipperLib.Clipper.prototype.ParseFirstLeft = global.ClipperLib.Clipper.ParseFirstLeft;
+  }
 
   const geometryutilCode = fs.readFileSync('E:/smartnest-ai/ai-service/deepnest-next/main/util/geometryutil.js', 'utf8');
   const geomFn = new Function('root', geometryutilCode + '; return root.GeometryUtil || GeometryUtil;');

@@ -40,7 +40,8 @@ export default function Dashboard() {
         const statsData = await api.getDashboardStats();
         const projectsData = await api.getProjects();
         setStats(statsData.data);
-        setProjects(projectsData.data.slice(0, 5)); // Show top 5 recent projects
+        const filteredProjects = (projectsData.data || []).filter(p => p.project_name !== '[Guide] Demo Workspace');
+        setProjects(filteredProjects.slice(0, 5)); // Show top 5 recent projects
         setError(null);
       } catch (err) {
         console.error('Error fetching dashboard details:', err);

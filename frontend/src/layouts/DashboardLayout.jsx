@@ -24,6 +24,7 @@ import {
   Settings as SettingsIcon,
   Inventory as RemnantsIcon,
   Layers as SheetsIcon,
+  MenuBook as GuideIcon,
 } from '@mui/icons-material';
 
 const drawerWidth = 260;
@@ -42,6 +43,7 @@ export default function DashboardLayout() {
     { text: 'Projects', icon: <ProjectsIcon />, path: '/projects' },
     { text: 'Remnants', icon: <RemnantsIcon />, path: '/remnants' },
     { text: 'Material Inventory', icon: <SheetsIcon />, path: '/sheets' },
+    { text: 'SmartNest Guide', icon: <GuideIcon />, path: '/guide' },
   ];
 
 

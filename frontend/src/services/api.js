@@ -249,6 +249,16 @@ export const api = {
     const response = await apiClient.delete('/sheets/audit-logs/clear', { data: payload });
     return response.data;
   },
+  
+  // Guide Endpoints
+  setupGuide: async () => {
+    const response = await apiClient.post('/guide/setup');
+    return response.data;
+  },
+  runGuideJob: async () => {
+    const response = await apiClient.post('/guide/run-job');
+    return response.data;
+  },
 };
 
 export default api;

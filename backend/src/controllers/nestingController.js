@@ -1379,6 +1379,12 @@ const updateLayoutPlacements = async (req, res) => {
 
   } catch (err) {
     console.error('Error in updateLayoutPlacements:', err.message);
+    try {
+      const fs = require('fs');
+      fs.writeFileSync('C:\\Users\\shakt\\.gemini\\antigravity-ide\\brain\\66b5b1f9-207e-4e01-9881-c7de9c097ba4\\scratch\\error.log', `Error in updateLayoutPlacements: ${err.message}\nStack: ${err.stack}\n`, 'utf8');
+    } catch (logErr) {
+      console.error('Failed to write error to file:', logErr.message);
+    }
     return res.status(500).json({
       success: false,
       message: 'Internal Server Error',
@@ -1677,6 +1683,12 @@ const validateLayoutPlacement = async (req, res) => {
     });
   } catch (err) {
     console.error('Error in validateLayoutPlacement:', err.message);
+    try {
+      const fs = require('fs');
+      fs.writeFileSync('C:\\Users\\shakt\\.gemini\\antigravity-ide\\brain\\66b5b1f9-207e-4e01-9881-c7de9c097ba4\\scratch\\error.log', `Error in validateLayoutPlacement: ${err.message}\nStack: ${err.stack}\n`, 'utf8');
+    } catch (logErr) {
+      console.error('Failed to write error to file:', logErr.message);
+    }
     return res.status(500).json({
       success: false,
       message: 'Internal Server Error',
@@ -1700,7 +1712,7 @@ const finalizeLayout = async (req, res) => {
     const projRes = await pool.query('SELECT material_type, material_thickness FROM projects WHERE id = $1', [job.project_id]);
     const proj = projRes.rows[0];
     const materialType = proj ? proj.material_type : 'Mild Steel';
-    const thickness = proj ? parseFloat(proj.material_thickness) : 1.00;
+    const thickness = (proj && proj.material_thickness !== null && !isNaN(parseFloat(proj.material_thickness))) ? parseFloat(proj.material_thickness) : 1.00;
 
     const fs = require('fs');
     const path = require('path');
@@ -1723,7 +1735,8 @@ const finalizeLayout = async (req, res) => {
         });
       });
     }
-    const utilization = layoutData.utilisation;
+    const rawUtilization = layoutData.utilisation !== undefined ? layoutData.utilisation : (layoutData.utilization !== undefined ? layoutData.utilization : 0.00);
+    const utilization = isNaN(parseFloat(rawUtilization)) ? 0.00 : parseFloat(parseFloat(rawUtilization).toFixed(2));
 
     let sheet = null;
     if (job.remnant_id) {
@@ -1765,19 +1778,32 @@ const finalizeLayout = async (req, res) => {
     for (const region of leftoverRegions || []) {
       const sheetIndex = region.sheetIndex || 0;
       const conf = configuredSheets[sheetIndex] || configuredSheets[configuredSheets.length - 1];
-      const sW = region.sheetWidth || (conf ? conf.width : job.sheet_width);
-      const sH = region.sheetHeight || (conf ? conf.height : job.sheet_height);
+      const sW = region.sheetWidth || (conf ? conf.width : job.sheet_width) || 1000;
+      const sH = region.sheetHeight || (conf ? conf.height : job.sheet_height) || 1000;
       const parentId = region.parentRemnantId || null;
-      const originalSheetStr = conf ? `${sW}x${sH}` : `${job.sheet_width}x${job.sheet_height}`;
+      const originalSheetStr = conf ? `${sW}x${sH}` : `${job.sheet_width || 1000}x${job.sheet_height || 1000}`;
+
+      // Ensure region area/width/height are valid numbers
+      const regionArea = isNaN(parseFloat(region.area)) ? 0 : parseFloat(region.area);
+      const regionWidth = isNaN(parseFloat(region.width)) ? 0 : parseFloat(region.width);
+      const regionHeight = isNaN(parseFloat(region.height)) ? 0 : parseFloat(region.height);
+      const safeRegion = {
+        ...region,
+        area: regionArea,
+        width: regionWidth,
+        height: regionHeight
+      };
 
       await partitionLeftoverGeometry(
         job.project_id, materialType, thickness, sW, sH,
-        utilization, region, parentId, originalSheetStr
+        utilization, safeRegion, parentId, originalSheetStr
       );
     }
 
 
-    const remnantDims = calculateRemnantDimensions(job.sheet_width, job.sheet_height, maxX, maxY);
+    const safeMaxX = isNaN(parseFloat(maxX)) ? 0 : parseFloat(maxX);
+    const safeMaxY = isNaN(parseFloat(maxY)) ? 0 : parseFloat(maxY);
+    const remnantDims = calculateRemnantDimensions(job.sheet_width || 1000, job.sheet_height || 1000, safeMaxX, safeMaxY);
     const remnantValue = calculateRemnantValue(materialType, thickness, remnantDims.area);
 
     await pool.query(
@@ -1794,6 +1820,12 @@ const finalizeLayout = async (req, res) => {
     return res.status(200).json({ success: true, message: 'Layout finalized and manufacturing assets generated.' });
   } catch (err) {
     console.error('Error in finalizeLayout:', err.message);
+    try {
+      const fs = require('fs');
+      fs.writeFileSync('C:\\Users\\shakt\\.gemini\\antigravity-ide\\brain\\66b5b1f9-207e-4e01-9881-c7de9c097ba4\\scratch\\error.log', `Error in finalizeLayout: ${err.message}\nStack: ${err.stack}\n`, 'utf8');
+    } catch (logErr) {
+      console.error('Failed to write error to file:', logErr.message);
+    }
     return res.status(500).json({ success: false, message: 'Internal Server Error', error: err.message });
   }
 };

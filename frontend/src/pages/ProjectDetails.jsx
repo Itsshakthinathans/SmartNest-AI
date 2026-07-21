@@ -446,6 +446,7 @@ export default function ProjectDetails() {
                 disabled={files.length === 0}
                 onClick={handleNext}
                 startIcon={<NextIcon />}
+                data-guide-id="next-step-btn"
                 sx={{
                   background: 'linear-gradient(135deg, #0d9488 0%, #06b6d4 100%)',
                   color: '#ffffff',
@@ -506,7 +507,7 @@ export default function ProjectDetails() {
                 <Typography variant="body2">No parts uploaded yet. Select a file on the right panel to upload.</Typography>
               </Box>
             ) : (
-              <List sx={{ width: '100%' }}>
+              <List sx={{ width: '100%' }} data-guide-id="dxf-parts-queue">
                 {files.map((file) => (
                   <ListItem
                     key={file.id}

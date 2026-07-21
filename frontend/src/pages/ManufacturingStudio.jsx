@@ -212,6 +212,7 @@ export default function ManufacturingStudio() {
             <FormControl size="small" sx={{ minWidth: 240 }}>
               <InputLabel id="machine-profile-select-label" sx={{ color: '#0d9488', fontWeight: 'bold' }}>Target Controller</InputLabel>
               <Select
+                data-guide-id="target-controller-select"
                 labelId="machine-profile-select-label"
                 id="machine-profile-select"
                 value={selectedMachineProfile}
@@ -268,6 +269,7 @@ export default function ManufacturingStudio() {
               startIcon={downloadingGCode ? <CircularProgress size={16} color="inherit" /> : <DownloadIcon />}
               onClick={handleDownloadGCode}
               disabled={downloadingGCode || !activeSheet}
+              data-guide-id="download-gcode-btn"
               sx={{
                 bgcolor: '#0d9488',
                 '&:hover': { bgcolor: '#0f766e' },
@@ -309,7 +311,7 @@ export default function ManufacturingStudio() {
 
         {/* Center Column: Simulation Canvas */}
         <Grid item xs={12} md={6}>
-          <Box sx={{ height: '600px' }}>
+          <Box data-guide-id="studio-canvas-view" sx={{ height: '600px' }}>
             <StudioCanvas
               sheetWidth={activeSheet ? activeSheet.sheetWidth : 1000}
               sheetHeight={activeSheet ? activeSheet.sheetHeight : 1000}
@@ -325,7 +327,7 @@ export default function ManufacturingStudio() {
 
         {/* Right Column: Metrics Panel */}
         <Grid item xs={12} md={3}>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5 }}>
+          <Box data-guide-id="studio-metrics-panel" sx={{ display: 'flex', flexDirection: 'column', gap: 2.5 }}>
             <StudioMetricsPanel
               metrics={activeMetrics}
               qualityScore={activeQualityScore}

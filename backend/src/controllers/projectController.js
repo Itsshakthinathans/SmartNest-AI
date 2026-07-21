@@ -142,9 +142,9 @@ const deleteProject = async (req, res) => {
 // 5. Get Dashboard Stats
 const getDashboardStats = async (req, res) => {
   try {
-    const projectsCountResult = await pool.query('SELECT COUNT(*) FROM projects');
-    const filesCountResult = await pool.query('SELECT COUNT(*) FROM uploaded_files');
-    const jobsCountResult = await pool.query('SELECT COUNT(*) FROM nest_jobs');
+    const projectsCountResult = await pool.query("SELECT COUNT(*) FROM projects WHERE project_name != '[Guide] Demo Workspace'");
+    const filesCountResult = await pool.query("SELECT COUNT(*) FROM uploaded_files WHERE project_id NOT IN (SELECT id FROM projects WHERE project_name = '[Guide] Demo Workspace')");
+    const jobsCountResult = await pool.query("SELECT COUNT(*) FROM nest_jobs WHERE project_id NOT IN (SELECT id FROM projects WHERE project_name = '[Guide] Demo Workspace')");
 
     return res.status(200).json({
       success: true,

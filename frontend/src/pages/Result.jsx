@@ -1821,6 +1821,7 @@ export default function Result() {
               }
               navigate(`/results/${jobId}/studio${strategyQuery ? `?strategy=${strategyQuery}` : ''}`);
             }}
+            data-guide-id="cam-studio-btn"
             sx={{
               borderColor: '#0d9488',
               color: '#0d9488',
@@ -1951,7 +1952,7 @@ export default function Result() {
       )}
 
       {result?.nestingMode === 'multi' && (
-        <Box sx={{ mb: 4, display: 'flex', flexDirection: 'column', gap: 2, bgcolor: '#0f1319', p: 2.5, borderRadius: '12px', border: '1px solid rgba(255,255,255,0.06)' }}>
+        <Box data-guide-id="layout-tabs" sx={{ mb: 4, display: 'flex', flexDirection: 'column', gap: 2, bgcolor: '#0f1319', p: 2.5, borderRadius: '12px', border: '1px solid rgba(255,255,255,0.06)' }}>
           <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
             <Typography variant="subtitle1" sx={{ color: '#ffffff', fontWeight: 800 }}>
               Select Nesting Layout Strategy:
@@ -2252,6 +2253,7 @@ export default function Result() {
 
               {/* AI Manufacturing Advisor Card */}
               <Paper 
+                data-guide-id="ai-advisor-panel"
                 sx={{ 
                   p: 3, 
                   bgcolor: '#0c0f14', 

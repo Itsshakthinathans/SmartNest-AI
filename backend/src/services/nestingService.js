@@ -4,6 +4,11 @@ const { DOMParser } = require('@xmldom/xmldom');
 const axios = require('axios');
 const FormData = require('form-data');
 
+// Ensure ParseFirstLeft is patched if ClipperLib was pre-loaded
+if (global.ClipperLib && global.ClipperLib.Clipper && !global.ClipperLib.Clipper.prototype.ParseFirstLeft) {
+  global.ClipperLib.Clipper.prototype.ParseFirstLeft = global.ClipperLib.Clipper.ParseFirstLeft;
+}
+
 function findLargestEmptyRectangle(sheetWidth, sheetHeight, obstacles) {
   const xCoords = [0, sheetWidth];
   const yCoords = [0, sheetHeight];
@@ -259,6 +264,9 @@ function findLargestRectangleInLeftover(sheetWidth, sheetHeight, leftoverRegion,
 let environmentPrepared = false;
 
 function prepareEnvironment() {
+  if (global.ClipperLib && global.ClipperLib.Clipper && !global.ClipperLib.Clipper.prototype.ParseFirstLeft) {
+    global.ClipperLib.Clipper.prototype.ParseFirstLeft = global.ClipperLib.Clipper.ParseFirstLeft;
+  }
   if (environmentPrepared) return;
 
   console.log('[NestingService] Setting up Headless Nesting Environment...');

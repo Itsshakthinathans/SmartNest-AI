@@ -28,10 +28,12 @@ import {
   Add as AddIcon,
 } from '@mui/icons-material';
 import api from '../services/api';
+import { useGuide } from '../context/GuideContext';
 
 export default function Projects() {
   const navigate = useNavigate();
   const [projects, setProjects] = useState([]);
+  const { activePhase } = useGuide();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -52,7 +54,12 @@ export default function Projects() {
     try {
       setLoading(true);
       const response = await api.getProjects();
-      setProjects(response.data);
+      const rawProjects = response.data || [];
+      if (activePhase === 'project_planning') {
+        setProjects(rawProjects);
+      } else {
+        setProjects(rawProjects.filter(p => p.project_name !== '[Guide] Demo Workspace'));
+      }
       setError(null);
     } catch (err) {
       console.error('Error fetching projects:', err);
@@ -161,7 +168,7 @@ export default function Projects() {
       )}
 
       {/* Grid of Projects */}
-      <Grid container spacing={3}>
+      <Grid container spacing={3} data-guide-id="projects-list-container">
         {projects.length === 0 ? (
           <Grid item xs={12}>
             <Paper sx={{ p: 5, textAlign: 'center', bgcolor: '#0f1319', border: '1px solid rgba(255, 255, 255, 0.06)' }}>
@@ -220,6 +227,7 @@ export default function Projects() {
                     startIcon={<ViewIcon />}
                     onClick={() => navigate(`/projects/${proj.id}`)}
                     sx={{ color: '#0d9488', textTransform: 'none', fontWeight: 700 }}
+                    {...(proj.project_name === '[Guide] Demo Workspace' ? { 'data-guide-id': 'guide-project-card-manage' } : {})}
                   >
                     Manage
                   </Button>

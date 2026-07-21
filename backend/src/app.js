@@ -10,6 +10,7 @@ const exportRoutes = require('./routes/exportRoutes');
 const copilotRoutes = require('./routes/copilotRoutes');
 const sheetRoutes = require('./routes/sheetRoutes');
 const studioRoutes = require('./routes/studioRoutes');
+const guideRoutes = require('./routes/guideRoutes');
 
 const app = express();
 
@@ -44,5 +45,6 @@ app.use('/api/export', exportRoutes);
 app.use('/api/copilot', copilotRoutes);
 app.use('/api/sheets', sheetRoutes);
 app.use('/api/studio', studioRoutes);
+app.use('/api/guide', guideRoutes);
 
 module.exports = app;
